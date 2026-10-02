@@ -162,12 +162,13 @@ fn request(state: &Path, tool: &str, mut value: Value, options: &RequestOptions)
 }
 
 pub fn dispatch(cli: Cli) -> Result<Option<Value>> {
+    if let Action::Serve { config } = &cli.action {
+        crate::gateway::serve(serde_json::from_slice(&fs::read(config)?)?)?;
+        return Ok(None);
+    }
     let state = absolute(&cli.state.unwrap_or(home()?.join(".local/state/lkjyolo")))?;
     let value = match cli.action {
-        Action::Serve { config } => {
-            crate::gateway::serve(serde_json::from_slice(&fs::read(config)?)?)?;
-            return Ok(None);
-        }
+        Action::Serve { .. } => unreachable!(),
         Action::McpCall { json_base64 } => {
             use base64::Engine as _;
             ensure!(json_base64.len() <= 3 * 1024 * 1024, "Payload too large");

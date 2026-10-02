@@ -1,0 +1,8 @@
+{
+  "listen": "10.203.47.120:8787",
+  "public_origin": "https://coder.lkjsxc.com",
+  "backend": "coder",
+  "owner_id": "08edb307-306b-4030-951a-1c38ac71fc1f",
+  "workspace": "lkjsxc/tomato-ocelot-73",
+  "cli": "/home/coder/.local/bin/lkjyolo"
+}
