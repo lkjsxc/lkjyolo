@@ -5,6 +5,6 @@ dependencies:
   tools:
     - type: "mcp"
       value: "lkjyolo"
-      description: "lkjyolo: 永続 Linux 環境で直接コード変更・ビルド・テスト・コマンド実行"
+      description: "lkjyolo: edit code, build, test, and run commands in the persistent Linux development environment"
       transport: "streamable_http"
       url: "https://coder.lkjsxc.com/lkjyolo/mcp"

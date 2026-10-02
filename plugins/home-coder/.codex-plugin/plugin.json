@@ -17,8 +17,8 @@
     "shortDescription": "いつもの開発依頼を永続 Linux 環境で実行"
   },
   "name": "home-coder",
-  "version": "0.4.0",
-  "description": "コード実装・バグ修正・リポジトリ調査・ビルド・テストを、自分の永続 Linux 開発環境 lkjyolo で進める。実行環境が未指定の開発依頼に使う。",
+  "version": "0.4.1",
+  "description": "Implement features, fix bugs, inspect repositories, build, and test in the user's persistent Linux development environment lkjyolo. Use for development work when no other execution environment is specified.",
   "author": {
     "name": "lkjsxc"
   },

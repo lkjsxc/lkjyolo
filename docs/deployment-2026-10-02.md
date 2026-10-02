@@ -75,10 +75,19 @@ still active at the post-deployment observation around `2026-10-02T14:26Z`.
 - Public OAuth metadata returns the original Coder resource and issuer.
 - Coder's existing health route returns 200 through the unchanged TLS route.
 
-Authenticated end-to-end execution through the new ChatGPT connection, host
-installation refresh and natural tool selection remain unverified. The Mac
-locked during the final connection UI check. The existing Coder connector and
-workspace-side direct MCP operations were verified independently.
+Authenticated end-to-end execution through the new ChatGPT connection and natural
+tool selection remain unverified. After the Mac was unlocked, the installed plugin
+page and local cache showed version 0.4.0. The custom MCP connection form was
+prepared with the dedicated endpoint, OAuth DCR, and `coder:all`; completion of
+the user's OAuth consent is still pending confirmation. The existing Coder
+connector and workspace-side direct MCP operations were verified independently.
+
+On 2026-10-03 (JST), plugin 0.4.1 was saved as
+`pluginrel_6abfcd2a9af4819184fd875183a17a2d` and read back successfully. AI-facing
+skill instructions and discovery descriptions are now English; Japanese interface
+text and request examples are preserved. Skill validation and the existing
+archive-preservation test passed. Runtime code, endpoints, permissions, and
+invocation policy did not change; no service restart was needed.
 
 ## Rollback
 
