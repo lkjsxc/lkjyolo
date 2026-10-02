@@ -581,3 +581,109 @@ pub fn serve(config: Config) -> Result<()> {
         Ok(())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn coder_bridge_checks_owner_and_keeps_bearer_out_of_workspace_command() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let args = json!({"request_id":"bridge-test","cmd":"printf '%s' \"$(date)\"; printf '\\n'","workdir":"/tmp"});
+        let expected = args.clone();
+        let mock = std::thread::spawn(move || {
+            for index in 0..3 {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut socket);
+                let mut headers = String::new();
+                let mut size = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        size = value.trim().parse::<usize>().unwrap();
+                    }
+                    headers.push_str(&line);
+                }
+                assert!(
+                    headers
+                        .to_lowercase()
+                        .contains("authorization: bearer test-bearer-only-for-coder")
+                );
+                let mut bytes = vec![0; size];
+                reader.read_exact(&mut bytes).unwrap();
+                let rpc: Value = serde_json::from_slice(&bytes).unwrap();
+                let body = if index < 2 {
+                    assert_eq!(rpc["params"]["name"], "coder_get_authenticated_user");
+                    json!({"id":if index==0 {"expected-owner"} else {"other-owner"},"status":"active"})
+                } else {
+                    assert_eq!(rpc["params"]["name"], "coder_workspace_bash");
+                    assert_eq!(rpc["params"]["arguments"]["workspace"], "owner/workspace");
+                    let command = rpc["params"]["arguments"]["command"].as_str().unwrap();
+                    assert!(!command.contains("test-bearer"));
+                    assert!(!command.contains("$(date)"));
+                    let encoded = command
+                        .strip_prefix("/home/coder/.local/bin/lkjyolo mcp-call --json-base64 '")
+                        .unwrap()
+                        .strip_suffix('\'')
+                        .unwrap();
+                    let decoded: Value = serde_json::from_slice(
+                        &base64::engine::general_purpose::STANDARD
+                            .decode(encoded)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(decoded, json!({"name":"exec_command","arguments":expected}));
+                    json!({"output":json!({"request_id":"bridge-test","status":"done","exit_code":7,"output":"verbatim result"}).to_string(),"exit_code":0})
+                };
+                // Coder tools actually return JSON inside a text content block.
+                let result=json!({"jsonrpc":"2.0","id":rpc["id"],"result":{"content":[{"type":"text","text":body.to_string()}],"isError":false}}).to_string();
+                write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",result.len(),result).unwrap();
+            }
+        });
+        let server = Server {
+            origin: "https://coder.example.com".into(),
+            authority: "coder.example.com".into(),
+            permits: Arc::new(Semaphore::new(1)),
+            backend: Backend::Coder {
+                client: Client::builder()
+                    .no_proxy()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .unwrap(),
+                upstream: format!("http://{address}"),
+                owner_id: "expected-owner".into(),
+                workspace: "owner/workspace".into(),
+                cli: default_cli(),
+            },
+        };
+        assert!(server.authorized("test-bearer-only-for-coder").unwrap());
+        assert!(!server.authorized("test-bearer-only-for-coder").unwrap());
+        assert!(
+            server
+                .call(
+                    "test-bearer-only-for-coder",
+                    "coder_delete_workspace",
+                    json!({})
+                )
+                .is_err()
+        );
+        let result = server
+            .call("test-bearer-only-for-coder", "exec_command", args)
+            .unwrap();
+        assert_eq!(result["exit_code"], 7);
+        assert_eq!(result["output"], "verbatim result");
+        mock.join().unwrap();
+    }
+}

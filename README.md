@@ -48,7 +48,7 @@ ARM Linux は upstream と lkjyolo をソースビルドし、
 
 ### Python 版 0.1.0 からの移行
 
-同じ `install` コマンドで `~/.local/bin/lkjyolo` を Rust 版 にアトミックに切り替えます。
+同じ `install` コマンドで `~/.local/bin/lkjyolo` を Rust 版にアトミックに切り替えます。
 SQLite のスキーマ、依頼 ID、CLI 引数、結果 JSON、設定ファイル、PID の識別方式、Unix socket を引き継ぎます。
 既存の実行エンジンは再起動せず、旧版で開始した対話セッションを Rust 版から継続できます。
 Python が保存した JSON の表記差があっても、同じツール・引数の再送は保存済みの結果を返します。
@@ -110,6 +110,13 @@ SQLite による重複防止はこのインストールの同じ `request_id` �
 外部システムのトランザクションまで「exactly once」にするものではありません。
 送信済みか判定できない状況は `unknown` として残し、勝手に再送しません。
 依頼履歴は自動削除しません。これが重複防止の記録でもあるため、保存量を把握して明示的に整理してください。
+
+## 公開 gateway
+
+配備用設定は `deploy/`、実際の配置と復旧手順は [2026-10-02 の運用記録](docs/deployment-2026-10-02.md) にあります。
+`lkjyolo serve --config /absolute/path/config.json` で動作し、HTTP MCP 2025 と 2026-07-28 の discovery に対応します。
+Coder backend は同じ OAuth resource の認証を上流 Coder で検証します。`upstream_ip` は DNS の接続先だけを置き換え、TLS の検証は維持します。
+独立したローカル検証には `backend=local` と所有者だけが読める `token_file` を使えます。認証なしの実行モードはありません。
 
 ## 配置と運用
 
