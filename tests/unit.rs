@@ -228,7 +228,7 @@ fn plugin_packaging_preserves_every_source_file_and_binding() {
     let result = plugin_zip(&source, tmp.path()).unwrap();
     let file = fs::File::open(result["archive"].as_str().unwrap()).unwrap();
     let mut zip = zip::ZipArchive::new(file).unwrap();
-    assert_eq!(zip.len(), 6);
+    assert_eq!(zip.len(), 7);
     for index in 0..zip.len() {
         let mut file = zip.by_index(index).unwrap();
         let name = file.name().strip_prefix("home-coder/").unwrap().to_owned();

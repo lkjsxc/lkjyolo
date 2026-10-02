@@ -12,6 +12,7 @@ pub const TOOLS: &[&str] = &[
     "start_session",
     "write_stdin",
     "wait_for_exit",
+    "apply_patch",
 ];
 pub const TERMINAL: &[&str] = &["done", "error", "unknown"];
 
