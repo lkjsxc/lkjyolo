@@ -1,0 +1,10 @@
+policy:
+  allow_implicit_invocation: true
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "home-coder"
+      description: "Home Coder: lkjyolo の永続 Linux 開発環境でコード変更・ビルド・テスト・コマンド実行"
+      transport: "streamable_http"
+      url: "https://coder.lkjsxc.com/api/experimental/mcp/http"

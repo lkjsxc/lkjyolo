@@ -1,13 +1,28 @@
 ---
 name: manage-coder
-description: 自宅 Coder と lkjyolo で、自分の Linux ワークスペースを自律的に開発・運用する。任意コマンド、sudo、Docker、GitHub CLI、長時間ビルド、対話シェル、REPL、ファイル編集、環境管理、実行結果やログの回収に使う。
+description: コードやアプリの実装、バグ修正、リポジトリの調査・変更、ビルド・テスト、CLI・スクリプトの実行、開発環境の準備に使う。実行環境の指定がなければ自分の永続 Linux 環境 lkjyolo / Coder を既定にし、名前の明示は不要。指定済みの別環境・ローカルリポジトリを優先し、説明やコード例だけの依頼では実行しない。
 ---
 
 # lkjyolo · Home Coder
 
+## 普通の開発依頼から使う
+
+「実装して」「このエラーを直して」「このリポジトリを調べてテストして」
+「CLI を作って動作確認して」のように、実際の開発・実行が必要な依頼で使う。
+ユーザーが Coder、lkjyolo、プラグイン名を毎回指定する必要はない。
+実行場所が未指定なら、このユーザーの既定の開発環境として lkjyolo を選び、
+利用可能な接続とワークスペースを確認して作業を始める。「使ってよいか」は繰り返し尋ねない。
+
+ユーザーが指定した環境、会話で選択済みのローカルリポジトリ、既存プロジェクトの作業場所を優先する。
+別環境のファイルを勝手に転送しない。「説明だけ」「コード例だけ」「実行しない」にはその範囲で答える。
+通常の文章作成・検索・画像生成には、この開発環境を持ち込まない。
+対象リポジトリが会話から決まらなければ一覧を調べ、区別に必要な情報だけを尋ねる。
+
 接続は `https://coder.lkjsxc.com/api/experimental/mcp/http` の既存 `home-coder` MCP。
 Coder OAuth と既存 authentik ログインを使う。認証済みユーザーの OS 権限・Coder RBAC・
 ChatGPT のアプリ権限が操作範囲を決める。パスワードやトークンをチャットに貼らせない。
+ツールがまだ読み込まれていなければ、ホストのツール検索で Home Coder と下記ツール名を探す。
+接続済みならその接続を使う。未接続・401 の場合だけ接続画面を案内する。
 
 ## 自律実行の方針
 
@@ -22,7 +37,7 @@ ChatGPT のアプリ権限が操作範囲を決める。パスワードやトー
 
 ## 対象の確定
 
-最初に `coder_get_authenticated_user` と `coder_list_workspaces(owner="me")` で本人と実在する環境を確認。
+この会話で未確認なら `coder_get_authenticated_user` と `coder_list_workspaces(owner="me")` で本人と実在する環境を確認。
 既定の lkjyolo 配置先は `lkjsxc/tomato-ocelot-73`。
 返された owner/workspace/agent を用い、ユーザーの指定があればそちらを優先する。
 対象が決まったら `pwd`、対象ディレクトリ、Git 状態、適用される AGENTS.md を確認する。
@@ -30,9 +45,10 @@ ChatGPT のアプリ権限が操作範囲を決める。パスワードやトー
 
 ## 永続実行を優先する
 
-長時間処理、対話処理、変更を伴うコマンドには `lkjyolo` を使う。
-最初に `coder_workspace_bash` で `/home/coder/.local/bin/lkjyolo doctor` を実行。
-この CLI は同じ環境にインストール済み。別環境では存在を確かめる。
+この環境でのコマンド実行は、短い調査も含め `lkjyolo` を既定にする。
+この会話で未確認なら `coder_workspace_bash` で `/home/coder/.local/bin/lkjyolo doctor` を実行。
+Rust 製 CLI は同じ環境にインストール済み。動作確認済みなら各コマンドの前に doctor を繰り返さない。
+別環境では存在を確かめる。起動確認・復旧そのものには Coder の直接実行を使える。
 
 実行例（外側の Coder timeout は 60000 ms）:
 
