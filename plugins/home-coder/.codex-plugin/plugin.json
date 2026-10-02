@@ -12,12 +12,12 @@
       "開発用ワークスペースを用意して、必要な環境をセットアップして。"
     ],
     "developerName": "lkjsxc",
-    "displayName": "lkjyolo · Home Coder",
-    "longDescription": "「実装して」「バグを直して」「このリポジトリをテストして」といった依頼から、実行環境の指定がなければ自分の Coder ワークスペースで作業を進めます。既存の指定環境を優先し、説明だけの依頼では実行しません。Rust 製 lkjyolo が任意コマンド、sudo、Docker、GitHub CLI、対話シェル、長時間処理を支え、セッション・結果・ログを保持します。",
+    "displayName": "lkjyolo",
+    "longDescription": "実装・バグ修正・調査・ビルド・テストを、既定の永続 Linux 開発環境で自律的に進めます。Rust 製 MCP の 5 ツールから直接実行し、sudo・Docker・GitHub CLI・対話シェル・長時間処理・ファイル編集・再接続後の結果回収を扱います。Coder の管理ツールやワークスペース指定は通常の作業に不要です。",
     "shortDescription": "いつもの開発依頼を永続 Linux 環境で実行"
   },
   "name": "home-coder",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "コード実装・バグ修正・リポジトリ調査・ビルド・テストを、自分の永続 Linux 開発環境 lkjyolo で進める。実行環境が未指定の開発依頼に使う。",
   "author": {
     "name": "lkjsxc"

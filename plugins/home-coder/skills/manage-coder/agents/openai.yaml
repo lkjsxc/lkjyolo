@@ -4,7 +4,7 @@ policy:
 dependencies:
   tools:
     - type: "mcp"
-      value: "home-coder"
-      description: "Home Coder: lkjyolo の永続 Linux 開発環境でコード変更・ビルド・テスト・コマンド実行"
+      value: "lkjyolo"
+      description: "lkjyolo: 永続 Linux 環境で直接コード変更・ビルド・テスト・コマンド実行"
       transport: "streamable_http"
-      url: "https://coder.lkjsxc.com/api/experimental/mcp/http"
+      url: "https://coder.lkjsxc.com/lkjyolo/mcp"

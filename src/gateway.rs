@@ -15,7 +15,12 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    fs, io::Read, net::SocketAddr, os::unix::fs::MetadataExt, path::PathBuf, sync::Arc,
+    fs,
+    io::Read,
+    net::{IpAddr, SocketAddr},
+    os::unix::fs::MetadataExt,
+    path::PathBuf,
+    sync::Arc,
     time::Duration,
 };
 use tokio::sync::Semaphore;
@@ -46,6 +51,8 @@ pub enum BackendConfig {
     Coder {
         owner_id: String,
         workspace: String,
+        #[serde(default)]
+        upstream_ip: Option<IpAddr>,
         #[serde(default = "default_cli")]
         cli: String,
     },
@@ -114,6 +121,7 @@ impl Server {
                 owner_id,
                 workspace,
                 cli,
+                upstream_ip,
             } => {
                 ensure!(url.scheme() == "https", "Coder OAuth requires HTTPS");
                 ensure!(
@@ -131,13 +139,20 @@ impl Server {
                             .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b)),
                     "cli must be a simple absolute path"
                 );
-                let client = Client::builder()
+                let mut builder = Client::builder()
                     .timeout(Duration::from_secs(70))
                     .connect_timeout(Duration::from_secs(10))
                     .redirect(reqwest::redirect::Policy::none())
                     .no_proxy()
-                    .user_agent(format!("lkjyolo/{VERSION}"))
-                    .build()?;
+                    .user_agent(format!("lkjyolo/{VERSION}"));
+                // Override DNS without changing the HTTPS origin, SNI or certificate checks.
+                if let Some(ip) = upstream_ip {
+                    builder = builder.resolve(
+                        url.host_str().context("Missing host")?,
+                        SocketAddr::new(ip, url.port_or_known_default().unwrap()),
+                    );
+                }
+                let client = builder.build()?;
                 Backend::Coder {
                     client,
                     upstream: format!("{origin}/api/experimental/mcp/http"),

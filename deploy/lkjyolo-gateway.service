@@ -1,6 +1,6 @@
 [Unit]
 Description=lkjyolo authenticated development MCP gateway
-After=network-online.target coder.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
