@@ -7,6 +7,7 @@ use lkjyolo::{
     util::*,
 };
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::{
@@ -225,17 +226,52 @@ fn json_arguments_and_result_fallback() {
 fn plugin_packaging_preserves_every_source_file_and_binding() {
     let tmp = tempdir().unwrap();
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/home-coder");
+    let mut expected = BTreeMap::new();
+    let mut directories = vec![source.clone()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                directories.push(entry.path());
+            } else {
+                assert!(
+                    kind.is_file(),
+                    "Plugin source must contain only regular files"
+                );
+                let path = entry.path();
+                let relative = path.strip_prefix(&source).unwrap().to_str().unwrap();
+                expected.insert(format!("home-coder/{relative}"), fs::read(&path).unwrap());
+            }
+        }
+    }
     let result = plugin_zip(&source, tmp.path()).unwrap();
+    assert_eq!(result["files"], expected.len());
     let file = fs::File::open(result["archive"].as_str().unwrap()).unwrap();
     let mut zip = zip::ZipArchive::new(file).unwrap();
-    assert_eq!(zip.len(), 6);
+    assert_eq!(zip.len(), expected.len());
     for index in 0..zip.len() {
         let mut file = zip.by_index(index).unwrap();
-        let name = file.name().strip_prefix("home-coder/").unwrap().to_owned();
+        let original = expected
+            .remove(file.name())
+            .expect("Unexpected or duplicate plugin archive entry");
         let mut contents = Vec::new();
         file.read_to_end(&mut contents).unwrap();
-        assert_eq!(contents, fs::read(source.join(name)).unwrap());
+        assert_eq!(contents, original, "Contents differ for {}", file.name());
     }
+    assert!(expected.is_empty(), "Plugin archive omitted source files");
+
+    // ZipArchive deduplicates names, so also inspect every physical entry.
+    let mut archive = fs::File::open(result["archive"].as_str().unwrap()).unwrap();
+    let mut names = BTreeSet::new();
+    while let Some(mut file) = zip::read::read_zipfile_from_stream(&mut archive).unwrap() {
+        assert!(
+            names.insert(file.name().to_owned()),
+            "Duplicate plugin entry"
+        );
+        std::io::copy(&mut file, &mut std::io::sink()).unwrap();
+    }
+    assert_eq!(names.len(), zip.len());
 }
 
 #[test]
