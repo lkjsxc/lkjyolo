@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lkjyolo"
+version = "0.1.0"
+description = "Persistent, replayable execution for ChatGPT through authenticated Coder workspaces"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+authors = [{name = "lkjsxc"}]
+dependencies = []
+
+[project.scripts]
+lkjyolo = "lkjyolo.cli:main"
+
+[tool.setuptools]
+packages = ["lkjyolo"]

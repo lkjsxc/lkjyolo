@@ -1,0 +1,12 @@
+lkjyolo
+Copyright 2026 lkjsxc
+
+lkjyolo integrates the separately distributed chatgpt-exec-mcp 0.2.1
+by CeraCharlesCC, licensed under Apache-2.0:
+https://github.com/CeraCharlesCC/chatgpt-exec-mcp
+
+The upstream engine includes OpenAI Codex PTY utility code. The installer
+preserves its LICENSE, NOTICE and THIRD_PARTY_NOTICES.md beside the binary.
+This repository's Python bridge is independently implemented and does not
+vendor the engine source or binary. The project is not affiliated with or
+endorsed by CeraCharlesCC or OpenAI.

@@ -1,0 +1,23 @@
+name: test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch pinned execution engine
+        run: |
+          curl --fail --location --retry 3 -o /tmp/chatgpt-exec-mcp https://github.com/CeraCharlesCC/chatgpt-exec-mcp/releases/download/v0.2.1/chatgpt-exec-mcp-linux-x86_64
+          printf '%s  %s\n' 790fc21733c51373d9967931a834325b2e9f49581e3e9187cf7fb54cb62435f6 /tmp/chatgpt-exec-mcp | sha256sum --check
+          chmod +x /tmp/chatgpt-exec-mcp
+      - name: Run unit and real engine tests
+        env:
+          LKJYOLO_TEST_ENGINE: /tmp/chatgpt-exec-mcp
+        run: python3 -m unittest discover -s tests -v
+      - name: Build executable
+        run: python3 scripts/build.py
