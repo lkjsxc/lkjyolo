@@ -5,3 +5,4 @@ dist/
 .state/
 *.egg-info/
 .DS_Store
+target/

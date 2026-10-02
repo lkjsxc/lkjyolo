@@ -1,0 +1,11 @@
+{
+  "id": "legacy-replay",
+  "tool": "exec_command",
+  "arguments": "{\"cmd\":\"printf '日本語\\\\n'\",\"max_output_tokens\":4000,\"tty\":false,\"yield_time_ms\":1000}",
+  "digest": "f21c93a9994359b48b391d0da1b39c928fef49f9de9f262270447d64ab5c8e13",
+  "status": "done",
+  "created": 1790941663.3535597,
+  "updated": 1790941663.8189507,
+  "generation": "4c36fa6cd2d446d78d6755b8e2c8f659",
+  "result": "{\"resultType\": \"complete\", \"content\": [{\"type\": \"text\", \"text\": \"exit_code=0\"}], \"structuredContent\": {\"exit_code\": 0, \"output\": \"SAVED_BY_PYTHON\\n\"}, \"isError\": false}"
+}

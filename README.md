@@ -1,13 +1,14 @@
 # lkjyolo
 
-ChatGPT に、自分の Coder ワークスペースをできるだけ自律的に使わせるための実行基盤。
+ChatGPT に、自分の Coder ワークスペースをできるだけ自律的に使わせるための Rust 製実行基盤。
 任意のシェル、対話ターミナル、長時間ビルド、sudo、Docker、認証済み GitHub CLI を、既存の Coder OAuth 接続から使います。
+CLI・worker・インストーラー・プラグインの ZIP 作成・テストを Rust で実装し、Python ランタイムに依存しません。
 
 ```text
 ChatGPT / Codex
   └─ Home Coder MCP（OAuth・アプリ権限・Coder RBAC）
        └─ coder_workspace_bash
-            └─ lkjyolo CLI
+            └─ lkjyolo native CLI (Rust)
                  ├─ SQLite: 依頼 ID・実行結果・状態
                  ├─ 独立 worker: 呼び出し元が切れても結果を保存
                  └─ private Unix socket
@@ -28,12 +29,15 @@ ChatGPT / Codex
 
 ## インストール
 
-Linux x86_64 / Python 3.9 以降。通常のランタイム依存は Python 標準ライブラリと同梱する実行エンジンだけです。
+Linux x86_64。ソースビルドには Rust 1.88 以降と C コンパイラーが必要です。
+SQLite をバイナリに組み込み、TLS に rustls を使います。配置後は Python・Rust ツールチェーン・OpenSSL に依存しません。
+glibc などの基本 OS ライブラリと、別バイナリとして配置する Rust 製実行エンジンを利用します。
 
 ```sh
 git clone https://github.com/lkjsxc/lkjyolo.git
 cd lkjyolo
-python3 scripts/install.py --workspace "$HOME/workspace"
+cargo build --locked --release
+target/release/lkjyolo install --workspace "$HOME/workspace"
 ~/.local/bin/lkjyolo doctor
 ~/.local/bin/lkjyolo exec --request-id first-check 'pwd; id; sudo -n id -u'
 ```
@@ -42,9 +46,18 @@ python3 scripts/install.py --workspace "$HOME/workspace"
 `790fc21733c51373d9967931a834325b2e9f49581e3e9187cf7fb54cb62435f6` を検証します。
 `latest` を実行時に追従しません。設定の再実行で既存の稼働プロセスを再起動しません。
 
-ARM Linux は upstream をソースビルドし、`python3 scripts/build.py` の後に
-`python3 dist/lkjyolo.pyz setup --engine /path/to/chatgpt-exec-mcp --workspace /path/to/workspace --sha256 <検証した値>`
+ARM Linux は upstream と lkjyolo をソースビルドし、
+`target/release/lkjyolo setup --engine /path/to/chatgpt-exec-mcp --workspace /path/to/workspace --sha256 <検証した値>`
 で設定できます。このインストール経路は今回の実機検証対象外です。
+
+### Python 版 0.1.0 からの移行
+
+同じ `install` コマンドで `~/.local/bin/lkjyolo` を Rust 版 0.2.0 にアトミックに切り替えます。
+SQLite のスキーマ、依頼 ID、CLI 引数、結果 JSON、設定ファイル、PID の識別方式、Unix socket を引き継ぎます。
+既存の実行エンジンは再起動せず、旧版で開始した対話セッションを Rust 版から継続できます。
+Python が保存した JSON の表記差があっても、同じツール・引数の再送は保存済みの結果を返します。
+旧版の zipapp と状態データは削除しません。インストール結果の `previous_target` が切替前の配置先です。
+必要なら、その既知の配置先へ CLI のシンボリックリンクを戻してロールバックできます。
 
 ## ChatGPT からの操作
 
@@ -128,8 +141,8 @@ SQLite による重複防止はこのインストールの同じ `request_id` �
 
 | パス | 内容 |
 | --- | --- |
-| `~/.local/bin/lkjyolo` | バージョン固定 zipapp へのリンク |
-| `~/.local/share/lkjyolo/releases/0.1.0/` | Python zipapp |
+| `~/.local/bin/lkjyolo` | バージョン固定のネイティブ実行ファイルへのリンク |
+| `~/.local/share/lkjyolo/releases/0.2.0/lkjyolo` | Rust バイナリ |
 | `~/.local/share/lkjyolo/engines/0.2.1/` | 実行エンジンとライセンス |
 | `~/.local/state/lkjyolo/` | モード 0700 の状態ディレクトリ |
 | `settings.json` / `engine.json` | 配置・環境・実行エンジン設定 |
@@ -146,22 +159,27 @@ systemd や workspace startup script の変更は不要です。停止する場�
 ## 開発・検証
 
 ```sh
-python3 -m unittest discover -s tests -v
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
 LKJYOLO_TEST_ENGINE="$HOME/.local/share/lkjyolo/engines/0.2.1/chatgpt-exec-mcp" \
-  python3 -m unittest discover -s tests -v
-python3 scripts/build.py
+  cargo test --locked --test engine -- --ignored --test-threads=2
+cargo build --locked --release
+target/release/lkjyolo package-plugin
 ```
 
 Linux 実機テストは切断後の回収、同時重複依頼、対話状態、バックグラウンド完了、
-Ctrl-C、長い出力の復元、構文エラー、設定再実行でのプロセス維持を検証します。
-Linux エンジン未指定のとき統合テストは明示的にスキップされます。
-GitHub Actions も同じバイナリのハッシュを検証してから全テストを実行します。
+Ctrl-C、長い出力の復元、構文エラー、設定再実行でのプロセス維持、旧 Python 版の履歴との互換性を検証します。
+統合テストは通常の `cargo test` では `ignored` と表示され、上の `--ignored` 指定で明示的に実行します。
+エンジン未指定で統合テストを要求した場合は失敗します。macOS では単体テスト・コンパイル・プラグイン ZIP 作成を確認でき、実行管理は Linux 専用です。
+GitHub Actions は同じエンジンのハッシュを検証し、単体・実機テスト、Clippy、リリースビルド、ZIP 作成を実行します。
+`Cargo.lock` を保存し、CI と配置用ビルドでは `--locked` を使います。
 
 ## 参考・ライセンス
 
 実行エンジンは [CeraCharlesCC/chatgpt-exec-mcp](https://github.com/CeraCharlesCC/chatgpt-exec-mcp)
 の `v0.2.1`（Apache-2.0）をそのまま使用します。
-このプロジェクトは Coder 連携、永続リクエスト処理、インストール・プラグインを追加するものです。
+このプロジェクトは Rust で Coder 連携、永続リクエスト処理、インストール・プラグインを追加するものです。
 upstream の原作者や OpenAI による公式サービスではありません。
 
 - [OpenAI: MCP サーバー実装](https://developers.openai.com/plugins/build/mcp-server)
