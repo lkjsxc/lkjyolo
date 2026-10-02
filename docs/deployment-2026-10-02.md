@@ -79,8 +79,8 @@ Authenticated end-to-end execution through the new ChatGPT connection and natura
 tool selection remain unverified. After the Mac was unlocked, the installed plugin
 page and local cache showed version 0.4.0. The custom MCP connection form was
 prepared with the dedicated endpoint, OAuth DCR, and `coder:all`; completion of
-the user's OAuth consent is still pending confirmation. The existing Coder
-connector and workspace-side direct MCP operations were verified independently.
+the user's OAuth consent was pending confirmation at that point. The existing
+Coder connector and workspace-side direct MCP operations were verified independently.
 
 On 2026-10-03 (JST), plugin 0.4.1 was saved as
 `pluginrel_6abfcd2a9af4819184fd875183a17a2d` and read back successfully. AI-facing
@@ -88,6 +88,14 @@ skill instructions and discovery descriptions are now English; Japanese interfac
 text and request examples are preserved. Skill validation and the existing
 archive-preservation test passed. Runtime code, endpoints, permissions, and
 invocation policy did not change; no service restart was needed.
+
+The dedicated `lkjyolo MCP` app was subsequently observed as installed under
+`asdk_app_6abfcb784b68819186e299abbfd9a44a`. Its permission mode was set to
+`full_access`, following the user's requested autonomy. Plugin 0.4.2 binds that
+verified app ID and was saved as `pluginrel_6abfcf4058488191ba85021c2be2cdd9`, then
+read back successfully. The old Home Coder app is not a dependency; Coder itself
+remains the gateway's execution and authentication backend. Authenticated tool
+execution through the new ChatGPT app still requires host verification.
 
 ## Rollback
 

@@ -1,3 +1,7 @@
 {
-  "apps": {}
+  "apps": {
+    "connector": {
+      "id": "asdk_app_6abfcb784b68819186e299abbfd9a44a"
+    }
+  }
 }
