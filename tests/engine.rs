@@ -2,6 +2,7 @@
 //! Explicit opt-in real engine suite: cargo test --test engine -- --ignored.
 use lkjyolo::{
     engine::Engine,
+    journal::Journal,
     runtime::result_body,
     util::{fingerprint, wait_child},
 };
@@ -390,4 +391,53 @@ fn running_legacy_worker_identity_is_not_marked_unknown() {
     worker.wait().unwrap();
     assert_eq!(result["status"], "running");
     assert_eq!(f.run(&["requests"])["requests"][0]["status"], "unknown");
+}
+
+#[test]
+#[ignore = "requires Linux execution engine"]
+fn overlapping_wait_and_poll_keep_the_last_observed_exit() {
+    let f = Fixture::new();
+    let gate = f.path().join("finish");
+    let start = f.body(&[
+        "exec",
+        "--yield-ms",
+        "10",
+        "while [ ! -e finish ]; do sleep 0.02; done; exit 7",
+    ]);
+    let sid = start["session_id"].as_str().unwrap();
+    let waiting = f.run(&[
+        "wait",
+        "--request-id",
+        "overlap-wait",
+        "--client-wait",
+        "0",
+        "--seconds",
+        "15",
+        sid,
+    ]);
+    assert!(matches!(
+        waiting["status"].as_str(),
+        Some("queued" | "running")
+    ));
+    let poll = f.body(&["poll", "--request-id", "overlap-poll", sid]);
+    assert_eq!(poll["session_id"], sid);
+    assert!(poll.get("exit_code").is_none());
+
+    // The process cannot finish until the later-created poll has completed.
+    fs::write(gate, b"finish").unwrap();
+    let finished = f.run(&["result", "overlap-wait", "--wait", "45"]);
+    assert_eq!(finished["status"], "done");
+    assert_eq!(result_body(&finished["result"])["exit_code"], 7);
+    let journal = Journal::new(f.path()).unwrap();
+    let wait = journal.get("overlap-wait").unwrap();
+    let poll = journal.get("overlap-poll").unwrap();
+    assert!(wait.created < poll.created);
+    assert!(wait.updated > poll.updated);
+
+    let observed = f.run(&["sessions"]);
+    let session = &observed["sessions"][0];
+    assert_eq!(session["status"], "exited");
+    assert_eq!(session["exit_code"], 7);
+    assert_eq!(session["last_request_id"], "overlap-wait");
+    assert_eq!(session["last_seen_at"], wait.updated);
 }

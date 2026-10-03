@@ -325,3 +325,223 @@ fn http_redirect_is_not_followed_for_tool_mutations() {
 fn pid_fingerprint_rejects_missing_process() {
     assert!(fingerprint(u32::MAX).is_none());
 }
+
+// Request creation order need not match observation order: a long wait can
+// finish after a poll that was submitted later.
+#[test]
+#[cfg(target_os = "linux")]
+fn session_history_uses_completed_observations_and_preserves_exit() {
+    use lkjyolo::runtime::sessions;
+    let tmp = tempdir().unwrap();
+    let j = Journal::new(tmp.path()).unwrap();
+    let pid = std::process::id();
+    write_json(
+        &tmp.path().join("daemon.json"),
+        &json!({"pid":pid,"fingerprint":fingerprint(pid).unwrap(),
+            "generation":"current","started_at":0.0,"engine_sha256":"test"}),
+    )
+    .unwrap();
+    let record = |id: &str, tool: &str, created: f64, updated: f64, body: Value| {
+        let arguments = if tool == "start_session" {
+            json!({})
+        } else {
+            json!({"session_id":"session"})
+        };
+        j.prepare(id, tool, &arguments).unwrap();
+        j.generation(id, "current").unwrap();
+        j.finish(id, "done", &json!({"structuredContent":body}))
+            .unwrap();
+        j.db.execute(
+            "UPDATE requests SET created=?,updated=? WHERE id=?",
+            rusqlite::params![created, updated, id],
+        )
+        .unwrap();
+    };
+    record(
+        "start",
+        "start_session",
+        1.0,
+        1.0,
+        json!({"session_id":"session"}),
+    );
+    record("wait", "wait_for_exit", 2.0, 4.0, json!({"exit_code":7}));
+    record(
+        "poll",
+        "write_stdin",
+        3.0,
+        3.0,
+        json!({"session_id":"session"}),
+    );
+    let observed = sessions(tmp.path()).unwrap();
+    let session = &observed["sessions"][0];
+    assert_eq!(session["status"], "exited");
+    assert_eq!(session["exit_code"], 7);
+    assert_eq!(session["last_request_id"], "wait");
+    assert_eq!(session["last_seen_at"], 4.0);
+
+    // A delayed running receipt or later error cannot undo an observed exit.
+    record(
+        "delayed-poll",
+        "write_stdin",
+        3.5,
+        5.0,
+        json!({"session_id":"session"}),
+    );
+    j.prepare(
+        "late-error",
+        "write_stdin",
+        &json!({"session_id":"session"}),
+    )
+    .unwrap();
+    j.generation("late-error", "current").unwrap();
+    j.finish("late-error", "error", &json!({"isError":true}))
+        .unwrap();
+    j.db.execute(
+        "UPDATE requests SET created=6,updated=6 WHERE id='late-error'",
+        [],
+    )
+    .unwrap();
+    let observed = sessions(tmp.path()).unwrap();
+    let session = &observed["sessions"][0];
+    assert_eq!(session["status"], "exited");
+    assert_eq!(session["exit_code"], 7);
+    assert_eq!(session["last_request_id"], "late-error");
+    assert_eq!(session["last_seen_at"], 6.0);
+
+    // Queued and running requests are not completed observations.
+    j.prepare("pending", "write_stdin", &json!({"session_id":"session"}))
+        .unwrap();
+    j.generation("pending", "current").unwrap();
+    assert_eq!(sessions(tmp.path()).unwrap(), observed);
+    j.running("pending").unwrap();
+    assert_eq!(sessions(tmp.path()).unwrap(), observed);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn session_history_timestamp_ties_are_deterministic_and_exit_wins() {
+    use lkjyolo::runtime::sessions;
+    let tmp = tempdir().unwrap();
+    let j = Journal::new(tmp.path()).unwrap();
+    let pid = std::process::id();
+    write_json(
+        &tmp.path().join("daemon.json"),
+        &json!({"pid":pid,"fingerprint":fingerprint(pid).unwrap(),
+            "generation":"current","started_at":0.0,"engine_sha256":"test"}),
+    )
+    .unwrap();
+    for (id, tool, body) in [
+        (
+            "a-exit",
+            "wait_for_exit",
+            json!({"session_id":"session","exit_code":0}),
+        ),
+        ("z-poll", "write_stdin", json!({"session_id":"session"})),
+    ] {
+        j.prepare(id, tool, &json!({"session_id":"session"}))
+            .unwrap();
+        j.generation(id, "current").unwrap();
+        j.finish(id, "done", &json!({"structuredContent":body}))
+            .unwrap();
+        j.db.execute("UPDATE requests SET created=1,updated=2 WHERE id=?", [id])
+            .unwrap();
+    }
+    let observed = sessions(tmp.path()).unwrap();
+    let session = &observed["sessions"][0];
+    assert_eq!(session["status"], "exited");
+    assert_eq!(session["exit_code"], 0);
+    assert_eq!(session["last_request_id"], "z-poll");
+    assert_eq!(session["last_seen_at"], 2.0);
+    assert_eq!(sessions(tmp.path()).unwrap(), observed);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn malformed_exit_codes_do_not_create_or_replace_terminal_observations() {
+    use lkjyolo::runtime::sessions;
+    let tmp = tempdir().unwrap();
+    let j = Journal::new(tmp.path()).unwrap();
+    let pid = std::process::id();
+    write_json(
+        &tmp.path().join("daemon.json"),
+        &json!({"pid":pid,"fingerprint":fingerprint(pid).unwrap(),
+            "generation":"current","started_at":0.0,"engine_sha256":"test"}),
+    )
+    .unwrap();
+    j.prepare("start", "start_session", &json!({})).unwrap();
+    j.generation("start", "current").unwrap();
+    j.finish(
+        "start",
+        "done",
+        &json!({"structuredContent":{"session_id":"session"}}),
+    )
+    .unwrap();
+    for (phase, expected) in [("running", None), ("exited", Some(-9))] {
+        if let Some(exit_code) = expected {
+            j.prepare("exit", "wait_for_exit", &json!({"session_id":"session"}))
+                .unwrap();
+            j.generation("exit", "current").unwrap();
+            j.finish(
+                "exit",
+                "done",
+                &json!({"structuredContent":{"exit_code":exit_code}}),
+            )
+            .unwrap();
+        }
+        for (index, invalid) in [
+            Value::Null,
+            json!("0"),
+            json!({}),
+            json!([]),
+            json!(true),
+            json!(0.5),
+            json!(u64::MAX),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("{phase}-{index}");
+            j.prepare(&id, "write_stdin", &json!({"session_id":"session"}))
+                .unwrap();
+            j.generation(&id, "current").unwrap();
+            j.finish(
+                &id,
+                "done",
+                &json!({"structuredContent":{"session_id":"session","exit_code":invalid}}),
+            )
+            .unwrap();
+            // An arguments-only invalid exit must not invent a new session.
+            let phantom_id = format!("phantom-{id}");
+            j.prepare(
+                &phantom_id,
+                "wait_for_exit",
+                &json!({"session_id":phantom_id}),
+            )
+            .unwrap();
+            j.generation(&phantom_id, "current").unwrap();
+            j.finish(
+                &phantom_id,
+                "done",
+                &json!({"structuredContent":{"exit_code":invalid}}),
+            )
+            .unwrap();
+            let observed = sessions(tmp.path()).unwrap();
+            assert_eq!(
+                observed["sessions"].as_array().unwrap().len(),
+                1,
+                "{invalid}"
+            );
+            let session = &observed["sessions"][0];
+            if let Some(exit_code) = expected {
+                assert_eq!(session["status"], "exited", "{invalid}");
+                assert_eq!(session["exit_code"], exit_code, "{invalid}");
+            } else {
+                assert_eq!(
+                    session["status"], "running_at_last_observation",
+                    "{invalid}"
+                );
+                assert!(session.get("exit_code").is_none(), "{invalid}");
+            }
+        }
+    }
+}

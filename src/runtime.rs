@@ -121,8 +121,19 @@ pub fn sessions(state: &Path) -> Result<Value> {
     let journal = Journal::new(state)?;
     let mut sessions = BTreeMap::<(Option<String>, String), Value>::new();
     let mut rows = journal.rows(i64::MAX as usize)?;
-    rows.reverse();
+    // Concurrent calls can complete in a different order from submission.
+    // Reconstruct observations by receipt time; creation time and request ID
+    // provide deterministic tie breakers when timestamps are equal.
+    rows.sort_by(|a, b| {
+        a.updated
+            .total_cmp(&b.updated)
+            .then_with(|| a.created.total_cmp(&b.created))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     for row in rows {
+        if !TERMINAL.contains(&row.status.as_str()) {
+            continue;
+        }
         let args: Value = serde_json::from_str(&row.arguments)?;
         let result = row
             .result
@@ -131,13 +142,14 @@ pub fn sessions(state: &Path) -> Result<Value> {
             .transpose()?
             .unwrap_or(json!({}));
         let body = result_body(&result);
+        let exit_code = body.get("exit_code").and_then(Value::as_i64);
         let Some(sid) = body["session_id"].as_str().or(args["session_id"].as_str()) else {
             continue;
         };
         // A failed stale-session operation belongs to its original generation.
         // Do not invent a current-generation session from an error receipt.
         if !body["session_id"].is_string()
-            && !body["exit_code"].is_number()
+            && exit_code.is_none()
             && !sessions.contains_key(&(row.generation.clone(), sid.to_owned()))
         {
             continue;
@@ -147,9 +159,13 @@ pub fn sessions(state: &Path) -> Result<Value> {
             .or_insert_with(|| json!({"session_id":sid,"generation":row.generation}));
         item["last_request_id"] = json!(row.id);
         item["last_seen_at"] = json!(row.updated);
-        if let Some(exit_code) = body.get("exit_code") {
+        if let Some(exit_code) = exit_code {
             item["status"] = json!("exited");
-            item["exit_code"] = exit_code.clone();
+            item["exit_code"] = json!(exit_code);
+        } else if item["status"] == "exited" {
+            // A delayed running receipt or subsequent error cannot resurrect
+            // a process whose exit has already been observed.
+            continue;
         } else if row.generation != generation {
             item["status"] = json!("engine_restarted_or_stopped");
         } else if result["isError"] == true || row.status == "unknown" {
