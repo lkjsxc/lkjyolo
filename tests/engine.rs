@@ -439,5 +439,6 @@ fn overlapping_wait_and_poll_keep_the_last_observed_exit() {
     assert_eq!(session["status"], "exited");
     assert_eq!(session["exit_code"], 7);
     assert_eq!(session["last_request_id"], "overlap-wait");
-    assert_eq!(session["last_seen_at"], wait.updated);
+    // Compare timestamps after the same public JSON serialization boundary.
+    assert_eq!(session["last_seen_at"], finished["updated_at"]);
 }
