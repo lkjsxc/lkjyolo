@@ -1,0 +1,10 @@
+policy:
+  allow_implicit_invocation: true
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "lkjyolo"
+      description: "lkjyolo: edit code, build, test, and run commands in the persistent Linux development environment"
+      transport: "streamable_http"
+      url: "https://coder.lkjsxc.com/lkjyolo/mcp"

@@ -1,6 +1,9 @@
 pub mod cli;
 pub mod engine;
+pub mod files;
+pub mod gateway;
 pub mod journal;
+pub mod mcp;
 pub mod package;
 pub mod runtime;
 pub mod util;

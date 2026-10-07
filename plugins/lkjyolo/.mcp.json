@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "lkjyolo": {
+      "type": "streamable-http",
+      "url": "https://coder.lkjsxc.com/lkjyolo/mcp",
+      "headers": {}
+    }
+  }
+}

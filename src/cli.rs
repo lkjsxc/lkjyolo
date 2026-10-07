@@ -37,6 +37,16 @@ pub struct SessionOptions {
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
+    /// Serve the five-tool authenticated Streamable HTTP MCP
+    Serve {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Workspace-side JSON transport for the authenticated gateway
+    McpCall {
+        #[arg(long)]
+        json_base64: String,
+    },
     /// Configure the pinned engine without interrupting active work
     Setup {
         #[arg(long)]
@@ -51,9 +61,9 @@ pub enum Action {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
-    /// Build the existing Home Coder plugin ZIP without Python
+    /// Build the lkjyolo plugin ZIP without Python
     PackagePlugin {
-        #[arg(long, default_value = "plugins/home-coder")]
+        #[arg(long, default_value = "plugins/lkjyolo")]
         source: PathBuf,
         #[arg(long, default_value = "dist")]
         output: PathBuf,
@@ -152,8 +162,27 @@ fn request(state: &Path, tool: &str, mut value: Value, options: &RequestOptions)
 }
 
 pub fn dispatch(cli: Cli) -> Result<Option<Value>> {
+    if let Action::Serve { config } = &cli.action {
+        crate::gateway::serve(serde_json::from_slice(&fs::read(config)?)?)?;
+        return Ok(None);
+    }
     let state = absolute(&cli.state.unwrap_or(home()?.join(".local/state/lkjyolo")))?;
     let value = match cli.action {
+        Action::Serve { .. } => unreachable!(),
+        Action::McpCall { json_base64 } => {
+            use base64::Engine as _;
+            ensure!(json_base64.len() <= 3 * 1024 * 1024, "Payload too large");
+            let bytes = base64::engine::general_purpose::STANDARD.decode(json_base64)?;
+            let value: Value = serde_json::from_slice(&bytes)?;
+            let name = value["name"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Tool name required"))?;
+            crate::mcp::call(
+                &state,
+                name,
+                value.get("arguments").cloned().unwrap_or(json!({})),
+            )?
+        }
         Action::Setup {
             engine,
             workspace,

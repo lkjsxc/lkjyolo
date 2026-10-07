@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "home-coder": {
-      "type": "streamable-http",
-      "url": "https://coder.lkjsxc.com/api/experimental/mcp/http",
-      "headers": {}
-    }
-  }
-}

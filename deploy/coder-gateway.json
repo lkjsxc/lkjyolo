@@ -1,0 +1,9 @@
+{
+  "listen": "127.0.0.1:8787",
+  "public_origin": "https://coder.lkjsxc.com",
+  "backend": "coder",
+  "upstream_ip": "127.0.0.1",
+  "owner_id": "08edb307-306b-4030-951a-1c38ac71fc1f",
+  "workspace": "lkjsxc/tomato-ocelot-73",
+  "cli": "/home/coder/.local/bin/lkjyolo"
+}

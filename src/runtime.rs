@@ -72,10 +72,14 @@ pub fn run_worker(state: &Path, id: &str) -> Result<()> {
     journal.running(id)?;
     let mut dispatched = false;
     let outcome = (|| -> Result<Value> {
+        let arguments: Value = serde_json::from_str(&row.arguments)?;
+        if row.tool == "apply_patch" {
+            return crate::files::apply(state, &arguments, &mut dispatched)
+                .map(|body| json!({"structuredContent":body,"isError":false}));
+        }
         let engine = Engine::new(state)?;
         let identity = engine.ensure()?;
         journal.generation(id, &identity.generation)?;
-        let arguments: Value = serde_json::from_str(&row.arguments)?;
         journal.check_session(&arguments, &identity.generation)?;
         let wait = arguments["wait_seconds"].as_u64().unwrap_or(0).min(100);
         let yield_ms = arguments["yield_time_ms"].as_u64().unwrap_or(0).min(120000);

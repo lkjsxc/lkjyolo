@@ -1,5 +1,6 @@
 #![cfg(target_os = "linux")]
 //! Explicit opt-in real engine suite: cargo test --test engine -- --ignored.
+use base64::Engine as _;
 use lkjyolo::{
     engine::Engine,
     journal::Journal,
@@ -97,6 +98,53 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+#[test]
+#[ignore = "requires Linux execution engine"]
+fn direct_mcp_exec_file_edit_replay_and_recovery() {
+    let f = Fixture::new();
+    let invoke = |name: &str, args: Value| {
+        let payload = base64::engine::general_purpose::STANDARD
+            .encode(json!({"name":name,"arguments":args}).to_string());
+        f.run(&["mcp-call", "--json-base64", &payload])
+    };
+    let path = f.path().join("mcp-file");
+    let patch = json!({"request_id":"mcp-patch","changes":[{"path":path,"before_sha256":"absent","content":"hello\n"}]});
+    let first = invoke("apply_patch", patch.clone());
+    assert_eq!(first["status"], "done", "{first}");
+    assert_eq!(invoke("apply_patch", patch), first);
+    let read = invoke("read_file", json!({"path":path}));
+    assert_eq!(read["text"], "hello\n");
+    assert_eq!(read["sha256"], lkjyolo::util::sha256(b"hello\n"));
+    let args = json!({"request_id":"mcp-exec","cmd":"printf DIRECT; sleep 1; printf DONE","yield_time_ms":10});
+    let result = invoke("exec_command", args.clone());
+    assert_eq!(result["status"], "done", "{result}");
+    assert_eq!(invoke("exec_command", args), result);
+    assert_eq!(
+        invoke("get_result", json!({"request_id":"mcp-exec"})),
+        result
+    );
+    let sid = result["session_id"].as_str().unwrap();
+    let wait = invoke(
+        "write_stdin",
+        json!({"request_id":"mcp-wait","session_id":sid,"wait_seconds":15}),
+    );
+    let wait = if wait["status"] == "running" {
+        lkjyolo::mcp::flatten(f.run(&["result", "mcp-wait", "--wait", "20"]))
+    } else {
+        wait
+    };
+    assert_eq!(wait["exit_code"], 0, "{wait}");
+    assert!(wait["output"].as_str().unwrap().contains("DONE"));
+    let recent = invoke("get_result", json!({}));
+    assert!(
+        recent["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["request_id"] == "mcp-patch")
+    );
 }
 
 #[test]
