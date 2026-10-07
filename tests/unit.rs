@@ -225,7 +225,7 @@ fn json_arguments_and_result_fallback() {
 #[test]
 fn plugin_packaging_preserves_every_source_file_and_binding() {
     let tmp = tempdir().unwrap();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/home-coder");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/lkjyolo");
     let mut expected = BTreeMap::new();
     let mut directories = vec![source.clone()];
     while let Some(directory) = directories.pop() {
@@ -241,7 +241,7 @@ fn plugin_packaging_preserves_every_source_file_and_binding() {
                 );
                 let path = entry.path();
                 let relative = path.strip_prefix(&source).unwrap().to_str().unwrap();
-                expected.insert(format!("home-coder/{relative}"), fs::read(&path).unwrap());
+                expected.insert(format!("lkjyolo/{relative}"), fs::read(&path).unwrap());
             }
         }
     }

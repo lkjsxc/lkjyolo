@@ -16,8 +16,8 @@
     "longDescription": "実装・バグ修正・調査・ビルド・テストを、既定の永続 Linux 開発環境で自律的に進めます。Rust 製 MCP の 5 ツールから直接実行し、sudo・Docker・GitHub CLI・対話シェル・長時間処理・ファイル編集・再接続後の結果回収を扱います。Coder の管理ツールやワークスペース指定は通常の作業に不要です。",
     "shortDescription": "いつもの開発依頼を永続 Linux 環境で実行"
   },
-  "name": "home-coder",
-  "version": "0.4.2",
+  "name": "lkjyolo",
+  "version": "0.5.0",
   "description": "Implement features, fix bugs, inspect repositories, build, and test in the user's persistent Linux development environment lkjyolo. Use for development work when no other execution environment is specified.",
   "author": {
     "name": "lkjsxc"

@@ -144,7 +144,7 @@ pub fn plugin_zip(source: &Path, output: &Path) -> Result<Value> {
     let legacy = read(".codex-plugin/plugin.json")?;
     let interface = &manifest["extensions"]["com.openai"]["interface"];
     ensure!(
-        manifest["name"] == "home-coder" && legacy["name"] == manifest["name"],
+        manifest["name"] == "lkjyolo" && legacy["name"] == manifest["name"],
         "Plugin identity mismatch"
     );
     ensure!(
@@ -165,8 +165,9 @@ pub fn plugin_zip(source: &Path, output: &Path) -> Result<Value> {
         "Missing app binding"
     );
     ensure!(
-        read(".app.json")?["apps"].is_object(),
-        "Invalid app bindings"
+        read(".app.json")?["apps"]["connector"]["id"]
+            == "asdk_app_6abfcb784b68819186e299abbfd9a44a",
+        "Unexpected app identity"
     );
     for name in ["mcp.json", ".mcp.json"] {
         ensure!(
@@ -190,7 +191,7 @@ pub fn plugin_zip(source: &Path, output: &Path) -> Result<Value> {
         !output.starts_with(&source),
         "Plugin output must be outside the source directory"
     );
-    let target = output.join(format!("home-coder-{version}.zip"));
+    let target = output.join(format!("lkjyolo-{version}.zip"));
     let mut archive = ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
@@ -200,7 +201,7 @@ pub fn plugin_zip(source: &Path, output: &Path) -> Result<Value> {
             .strip_prefix(&source)?
             .to_str()
             .context("Plugin file name is not UTF-8")?;
-        archive.start_file(format!("home-coder/{relative}"), options)?;
+        archive.start_file(format!("lkjyolo/{relative}"), options)?;
         archive.write_all(&fs::read(file)?)?;
     }
     let data = archive.finish()?.into_inner();

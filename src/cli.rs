@@ -61,9 +61,9 @@ pub enum Action {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
-    /// Build the existing Home Coder plugin ZIP without Python
+    /// Build the lkjyolo plugin ZIP without Python
     PackagePlugin {
-        #[arg(long, default_value = "plugins/home-coder")]
+        #[arg(long, default_value = "plugins/lkjyolo")]
         source: PathBuf,
         #[arg(long, default_value = "dist")]
         output: PathBuf,
