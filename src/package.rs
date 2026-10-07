@@ -165,14 +165,12 @@ pub fn plugin_zip(source: &Path, output: &Path) -> Result<Value> {
         "Missing app binding"
     );
     ensure!(
-        read(".app.json")?["apps"]["connector"]["id"]
-            == "asdk_app_6ab5d7fa83288191aa3f95f47f065380",
-        "Unexpected app identity"
+        read(".app.json")?["apps"].is_object(),
+        "Invalid app bindings"
     );
     for name in ["mcp.json", ".mcp.json"] {
         ensure!(
-            read(name)?["mcpServers"]["home-coder"]["url"]
-                == "https://coder.lkjsxc.com/api/experimental/mcp/http",
+            read(name)?["mcpServers"]["lkjyolo"]["url"] == "https://coder.lkjsxc.com/lkjyolo/mcp",
             "Unexpected MCP endpoint"
         );
     }

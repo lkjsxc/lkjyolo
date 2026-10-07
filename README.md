@@ -6,15 +6,11 @@ CLI・worker・インストーラー・プラグインの ZIP 作成・テスト
 
 ```text
 ChatGPT / Codex
-  └─ Home Coder MCP（OAuth・アプリ権限・Coder RBAC）
-       └─ coder_workspace_bash
-            └─ lkjyolo native CLI (Rust)
-                 ├─ SQLite: 依頼 ID・実行結果・状態
-                 ├─ 独立 worker: 呼び出し元が切れても結果を保存
-                 └─ private Unix socket
-                      └─ chatgpt-exec-mcp 0.2.1
-                           ├─ shell / PTY / stdin / Ctrl-C
-                           └─ セッション・省略出力のログ
+  └─ lkjyolo MCP: exec_command / write_stdin / read_file / apply_patch / get_result
+       └─ Rust gateway + same-origin Coder OAuth
+            └─ Coder (workspace auto-start and transport, hidden from the model)
+                 └─ Rust CLI / durable worker / SQLite journal
+                      └─ chatgpt-exec-mcp 0.2.1 / PTY / persistent output
 ```
 
 ## できること
@@ -25,7 +21,7 @@ ChatGPT / Codex
 - 多量の出力を短く返し、省略されたログをバイト範囲で回収する。
 - コマンド許可リスト、作業ディレクトリによるアクセス制限、追加の承認プロンプトを設けない。
 - `sudo -n`、Docker、既存の `gh` ログインなど、ワークスペース利用者に与えられた権限を利用する。
-- 新しい公開ポートや別の認証情報を用意せず、既に接続済みの Home Coder を拡張する。
+- 同じ Coder OAuth を使う専用 HTTPS エンドポイントを提供し、モデルには開発用の 5 ツールだけを見せる。
 
 ## インストール
 
@@ -52,7 +48,7 @@ ARM Linux は upstream と lkjyolo をソースビルドし、
 
 ### Python 版 0.1.0 からの移行
 
-同じ `install` コマンドで `~/.local/bin/lkjyolo` を Rust 版 0.2.0 にアトミックに切り替えます。
+同じ `install` コマンドで `~/.local/bin/lkjyolo` を Rust 版にアトミックに切り替えます。
 SQLite のスキーマ、依頼 ID、CLI 引数、結果 JSON、設定ファイル、PID の識別方式、Unix socket を引き継ぎます。
 既存の実行エンジンは再起動せず、旧版で開始した対話セッションを Rust 版から継続できます。
 Python が保存した JSON の表記差があっても、同じツール・引数の再送は保存済みの結果を返します。
@@ -61,64 +57,42 @@ Python が保存した JSON の表記差があっても、同じツール・引�
 
 ## ChatGPT からの操作
 
-プラグイン 0.3.0 は「実装して」「バグを直して」「このリポジトリをテストして」などの
-開発依頼を自動選択の対象にします。実行環境が未指定なら lkjyolo を使い、指定済みの別環境や
-ローカルリポジトリがあればそちらを優先します。説明やコード例だけの依頼では実行しません。
-スキルには `allow_implicit_invocation: true` と Home Coder MCP の依存関係を同梱しています。
-ChatGPT 側でこのプラグインが有効で、Coder の接続が利用可能である必要があります。
-自動選択はモデルの判断なので全依頼での呼び出しを保証する設定ではありません。
-反映前の会話や自動選択されなかった場合は `@lkjyolo · Home Coder` を明示して使えます。
+専用 URL は `https://coder.lkjsxc.com/lkjyolo/mcp`。プラグイン 0.4.2 の表示名は **lkjyolo**。
+「実装して」「バグを直して」「テストして」のような実行依頼を自動選択の対象にします。
+実行環境が未指定なら既定の Linux 環境を使い、指定済みの環境やローカルプロジェクトを優先します。
+説明だけの依頼では実行しません。ホスト側で接続・有効化が必要で、自動選択はモデルの判断です。
 
-`plugins/home-coder` のスキルを使います。最初に本人・ワークスペース一覧を確認し、対象を確定します。
-インストール先の既定は `lkjsxc/tomato-ocelot-73` ですが、接続時の実在確認を省略しません。
+AI 向けのツール説明・スキル手順・選択用の説明は英語に統一しています。
+画面の説明と利用ガイドは日本語を維持し、スキルには日本語の依頼例も含めています。
+応答にはユーザーの言語を使います。
 
-`coder_workspace_bash` の例:
+ChatGPT では専用の **lkjyolo MCP** 接続をプラグインに紐付けます。
+旧 **Home Coder MCP** プラグインは通常の開発に不要です。
+Coder サーバーとワークスペースは引き続き実行基盤として使用します。
 
-```json
-{
-  "workspace": "lkjsxc/tomato-ocelot-73",
-  "command": "/home/coder/.local/bin/lkjyolo exec --request-id project-build-001 --cwd /home/coder/workspace/my-project 'npm test'",
-  "timeout_ms": 60000
-}
-```
-
-`lkjyolo` の JSON は Coder の `output` 文字列内に返ります。結果の見方:
-
-| 値 | 意味 |
+| ツール | 用途 |
 | --- | --- |
-| `status=queued/running` | 依頼処理中。`result <request_id> --wait 45` で取得する |
-| `status=done` | MCP 応答を保存済み。コマンド成功とは限らない |
-| `result.structuredContent.session_id` | プロセス継続中。`wait` / `input` / `poll` に渡す |
-| `result.structuredContent.exit_code` | コマンド終了コード。0 以外も正確に返す |
-| `status=error` | 入力・起動・MCP エラー。`result` 内の理由を確認する |
-| `status=unknown` | 送信後に結果を確認できなかった。再実行せず履歴・ログ・副作用を調べる |
-| `output_ref` | 切り詰められた出力の保存場所・範囲・保存状態 |
+| `exec_command` | コマンド実行、対話シェル、sudo・Docker・GitHub CLI |
+| `write_stdin` | 入力、出力回収、15〜35 秒の待機、Ctrl-C |
+| `read_file` | ファイル・ディレクトリ・省略ログの読み取り |
+| `apply_patch` | 更新前 SHA-256 を確認した作成・全文置換・削除 |
+| `get_result` | 通信断後の結果回収、最近の依頼一覧 |
 
-新しい作業には新しい依頼 ID を使い、通信が切れた依頼の回収には同じ ID を使います。
-同じ ID で異なる引数を送るとエラーになります。入力送信も依頼 ID を指定すれば二重送信を防げます。
+変更操作とポーリングには一意の `request_id` を付けます。返り値は直接読める JSON で、
+Coder の output の中から別の JSON を取り出す必要はありません。
 
-```sh
-# すぐにセッションを返して、後から待機する
-lkjyolo exec --request-id test-001 --yield-ms 100 --cwd /path/to/project 'npm test'
-lkjyolo wait --request-id test-wait-001 <session_id> --seconds 35
+- `queued/running`: `get_result` で依頼の完了を回収する。
+- `done`: 応答保存済み。コマンドの成功判定には `exit_code` を使う。
+- `session_id`: コマンドは継続中。`write_stdin` で続ける。
+- `unknown`: 実行された可能性がある。新しい ID で再実行せず、実際の副作用を確認する。
+- `output_ref.path`: `read_file` で省略ログを必要な範囲だけ回収する。
 
-# 対話シェル。export / cd / REPL の状態が次の呼び出しに残る
-lkjyolo start --request-id repl-001 'python3 -q'
-lkjyolo call write_stdin --request-id repl-input-001 --json '{"session_id":"<session_id>","chars":"print(6 * 7)\n"}'
-lkjyolo interrupt --request-id interrupt-001 <session_id>
+同じ ID と同じ引数の再送は保存結果を返します。別引数の同じ ID は拒否します。
+ツール引数は合計 64 KiB、読み取りは最大 256 KiB、編集の SHA-256 は 16 MiB 以下のファイルに対応します。
+大きい処理は環境内のコマンドで行えます。ファイル編集は各ファイル単位で atomic rename します。
+バッチ全体のトランザクションや、外部エディターとの同時編集の排他は提供しません。
 
-# 保存結果・実行履歴・セッションの確認
-lkjyolo result test-001 --wait 45
-lkjyolo requests --limit 30
-lkjyolo sessions
-lkjyolo log /absolute/path/from/output_ref --offset 0 --limit 16384
-
-# 複雑なクオートは Coder の専用ファイルツールで JSON を置いて渡す
-lkjyolo call exec_command --request-id task-001 --json @/path/to/arguments.json
-```
-
-ファイルの通常の読み書きは既存 Coder ファイルツールを使います。`log` は実行エンジンの保存ログ専用です。
-CLI は完了した子コマンドの終了コードを JSON に保持します。CLI 自身の終了コード 0 は「応答取得成功」であり、子コマンド成功の判定には `exit_code` を使います。
+CLI の `exec/start/input/poll/wait/interrupt/result/requests/sessions/log` も引き続き利用できます。
 
 ## 権限と持続性
 
@@ -127,7 +101,7 @@ CLI は完了した子コマンドの終了コードを JSON に保持します�
 `HOME/USER/PATH/LANG/TERM` を明示しているため、追加の環境変数はコマンド内、設定、既存の認証ストアで与えます。
 シェルは `/bin/bash -c` であり、ログインプロファイルは自動読込しません。
 
-ChatGPT のアプリ権限はプラグイン定義と別です。Home Coder MCP の「すべての操作を許可」を選ぶと、
+ChatGPT のアプリ権限はプラグイン定義と別です。lkjyolo 接続の「すべての操作を許可」を選ぶと、
 この接続の読み取り・実行時の確認を抑えられます。モデルやホストが課す規則をプラグインが解除する機能はありません。
 任意コマンド実行を読み取り専用と偽るようなメタデータ変更もしません。
 
@@ -145,22 +119,29 @@ SQLite による重複防止はこのインストールの同じ `request_id` �
 送信済みか判定できない状況は `unknown` として残し、勝手に再送しません。
 依頼履歴は自動削除しません。これが重複防止の記録でもあるため、保存量を把握して明示的に整理してください。
 
+## 公開 gateway
+
+配備用設定は `deploy/`、実際の配置と復旧手順は [2026-10-02 の運用記録](docs/deployment-2026-10-02.md) にあります。
+`lkjyolo serve --config /absolute/path/config.json` で動作し、HTTP MCP 2025 と 2026-07-28 の discovery に対応します。
+Coder backend は同じ OAuth resource の認証を上流 Coder で検証します。`upstream_ip` は DNS の接続先だけを置き換え、TLS の検証は維持します。
+独立したローカル検証には `backend=local` と所有者だけが読める `token_file` を使えます。認証なしの実行モードはありません。
+
 ## 配置と運用
 
 | パス | 内容 |
 | --- | --- |
 | `~/.local/bin/lkjyolo` | バージョン固定のネイティブ実行ファイルへのリンク |
-| `~/.local/share/lkjyolo/releases/0.2.0/lkjyolo` | Rust バイナリ |
+| `~/.local/share/lkjyolo/releases/0.3.0/lkjyolo` | Rust バイナリ |
 | `~/.local/share/lkjyolo/engines/0.2.1/` | 実行エンジンとライセンス |
 | `~/.local/state/lkjyolo/` | モード 0700 の状態ディレクトリ |
 | `settings.json` / `engine.json` | 配置・環境・実行エンジン設定 |
 | `requests.sqlite3` | 依頼引数・出力・結果（秘密を含み得るため Git 対象外） |
 | `engine.log` / `workers.log` | 診断ログ |
 | `outputs/` | 回収可能な省略出力 |
-| `mcp.sock` | モード 0600 の Unix socket、公開 TCP listener なし |
+| `mcp.sock` | モード 0600 の Unix socket（ワークスペースのエンジンは TCP 非公開） |
 
 依頼を始めるたびに daemon の生存と起動ロックを確認します。
-systemd や workspace startup script の変更は不要です。停止する場合は、進行中の処理が終わったことを確認してから、
+ワークスペースの systemd や startup script の変更は不要です。公開 gateway は別の systemd サービスで動作します。停止する場合は、進行中の処理が終わったことを確認してから、
 `doctor` が返す実行エンジン PID に `TERM` を送ってください。削除・停止を通常のセットアップに混ぜません。
 アンインストールでは既存 Coder 接続を維持でき、`~/.local/bin/lkjyolo` と専用配置だけを対象にできます。
 
