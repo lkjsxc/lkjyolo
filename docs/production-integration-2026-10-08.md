@@ -117,8 +117,32 @@ The rollback acquires the host writer lock, atomically restores the old binary
 and restarts only the gateway. It does not restore databases or workspace state.
 Pre/post observations and the rollback script remain in the root-only directory.
 
-## Deferred engine capacity activation
+## Engine capacity activated
 
-The separate 512-continuation engine setting remains staged until an engine
-restart can be scheduled without terminating active work. Gateway and CLI
-rollout did not restart that shared engine; its effective limit remains 128.
+The owner subsequently explicitly authorized restarting the shared execution
+engine and ending its active sessions. At `2026-10-08T05:19:03.980099Z`, the
+verified old process (PID `1116066`, generation
+`4c36fa6cd2d446d78d6755b8e2c8f659`) was stopped with SIGTERM; SIGKILL was not
+needed. Its verified direct child processes were no longer present afterward.
+New PID `2732023`, generation `48826b25b47946a58d71b7b0e106f8fd`, passed the
+engine readiness check.
+
+Restart used the existing admission and daemon locks, checked the old process
+fingerprint and pinned engine executable, and preserved the journal and output
+store. The unchanged configuration has SHA-256
+`8463764a5eed40edf2dbacddaa592e0b8025f2d9218b6780c3598283f403c52c`.
+The new process was verified to use that configuration file, with
+`max_exec_continuations=512` and `max_explicit_sessions=64`. This completes the
+previously deferred capacity activation; no quota saturation test was performed.
+
+The journal retained all 5,201 records observed before restart. The existing
+configuration, daemon identity and pre/post maintenance observations are saved
+privately under
+`/home/coder/.local/state/lkjyolo/maintenance/engine-restart-20261008T051903Z`.
+The old daemon identity is evidence only; restoring it cannot revive stopped
+processes or sessions.
+
+Authenticated public MCP execution returned a new-generation continuation;
+empty-input polling recovered its final output with exit code 0, and
+`get_result` recovered the same receipt. A receipt from before restart remained
+readable through public MCP. Coder's public health endpoint remained `OK`.
