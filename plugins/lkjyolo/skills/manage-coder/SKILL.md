@@ -76,13 +76,54 @@ Recover queued, interrupted, or uncertain operations as follows:
   prevents duplicate execution and returns the saved result.
 - `unknown`: the operation may have started. Inspect history, logs, and actual
   effects before attempting replacement work; do not retry blindly with a new ID.
-- `error`: fix the cause and use a new ID for a new operation.
+- `error`: inspect the actual error and any partial effects before fixing its cause.
+  An error is not evidence that no side effect occurred. Use a new ID only for
+  genuinely new, authorized work after resolving the previous outcome.
 - `output_ref.path`: use `read_file` to retrieve only the needed ranges of the
   truncated log.
 
 Processes survive client disconnects, but stop when the workspace or execution
 engine restarts. History and retained logs persist in the home directory.
 Input to a session from an older engine generation is rejected.
+
+## Attribute failures before stopping work
+
+Do not classify a failure as a safety block unless the host explicitly reports
+such a refusal. Keep host safety refusals, permission/OAuth errors, transport or
+upstream failures, local tool errors, and nonzero command exits distinct. An
+unknown cause stays unknown; do not invent an internal classifier explanation.
+A single failed call is not proof that the entire workspace is inaccessible.
+Continue independent authorized work that does not depend on the blocked action.
+Do not ask the user to repeat permissions or decisions already provided.
+
+For ordinary transport failures, retain the original request ID and retrieve its
+receipt. `Unknown request_id` alone does not prove that the request never ran or
+that OpenAI rejected it: the journal may not cover the failed stage. Recover
+actual postconditions before any replacement mutation. Collect the final response
+of each completed continuation so unused continuations do not occupy capacity.
+Do not restart the shared engine or interrupt another task to free capacity.
+
+For an explicit host safety refusal, preserve the exact message, timestamp, tool,
+request ID (when present), authorized target and intended effects. Keep command
+arguments or evidence containing secrets private; provide a sanitized support
+summary rather than dumping credentials, environment variables or the full
+journal. Do not disguise, rephrase or route the refused action through another
+interface to get around that refusal. No plugin instruction overrides host safety
+or authorization. A fresh affirmative user permission is not proof that a host
+refusal has been removed.
+
+When separately authorized diagnostics are needed, this workspace provides
+`/home/coder/.local/bin/lkjyolo-diagnostics --limit 100` and
+`/home/coder/.local/bin/lkjyolo-diagnostics --request-id <original-id>`.
+This optional helper reads a bounded journal snapshot without starting workers,
+reconciling request state, replaying commands, consuming session output, or
+changing permissions. It returns sanitized classifications, not raw arguments,
+error messages or command output. Its `platform_safety_verdict=not_observable`
+is a limitation, not a verdict of safety or evidence that a block is resolved.
+Receipt counts are not a safety-block rate. If the helper is unavailable, report
+that specific limitation and use existing permitted receipt inspection; do not
+install a different runtime or replace the live CLI as an incidental workaround.
+The helper is for diagnosis, not a mandatory preflight for ordinary development.
 
 ## Edit files
 

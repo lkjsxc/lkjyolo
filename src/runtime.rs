@@ -60,6 +60,10 @@ pub fn submit(
 }
 
 pub fn run_worker(state: &Path, id: &str) -> Result<()> {
+    enum Response {
+        Direct(Value),
+        Session(crate::sessions::Delivery),
+    }
     validate_id(id)?;
     let journal = Journal::new(state)?;
     let locks = state.join("request-locks");
@@ -71,11 +75,11 @@ pub fn run_worker(state: &Path, id: &str) -> Result<()> {
     }
     journal.running(id)?;
     let mut dispatched = false;
-    let outcome = (|| -> Result<Value> {
+    let outcome = (|| -> Result<Response> {
         let arguments: Value = serde_json::from_str(&row.arguments)?;
         if row.tool == "apply_patch" {
             return crate::files::apply(state, &arguments, &mut dispatched)
-                .map(|body| json!({"structuredContent":body,"isError":false}));
+                .map(|body| Response::Direct(json!({"structuredContent":body,"isError":false})));
         }
         let engine = Engine::new(state)?;
         let identity = engine.ensure()?;
@@ -84,15 +88,20 @@ pub fn run_worker(state: &Path, id: &str) -> Result<()> {
         let wait = arguments["wait_seconds"].as_u64().unwrap_or(0).min(100);
         let yield_ms = arguments["yield_time_ms"].as_u64().unwrap_or(0).min(120000);
         let timeout = 50.max(wait + 15).max(yield_ms.div_ceil(1000) + 15);
-        dispatched = true;
-        engine.rpc(
-            "tools/call",
-            json!({"name":row.tool,"arguments":arguments}),
+        crate::sessions::dispatch(
+            &engine,
+            &journal,
+            &row,
+            &identity.generation,
+            &arguments,
             timeout,
+            &mut dispatched,
         )
+        .map(Response::Session)
     })();
     match outcome {
-        Ok(value) => journal.finish(id, if value["isError"] == true { "error" } else { "done" }, &value),
+        Ok(Response::Direct(value)) => journal.finish(id, if value["isError"] == true { "error" } else { "done" }, &value),
+        Ok(Response::Session(delivery)) => delivery.commit(&journal, id),
         Err(error) => journal.finish(id, if dispatched { "unknown" } else { "error" }, &json!({
             "isError":true,"error":format!("{error:#}"),"execution_may_have_started":dispatched,
             "retry":if dispatched {"Inspect this receipt and side effects; never repeat an uncertain mutation with a new ID."}

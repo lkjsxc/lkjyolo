@@ -1,7 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "author": {
-    "name": "lkjsxc"
+    "name": "lkjsxc",
+    "email": "lkjsxc@gmail.com"
   },
   "description": "Implement features, fix bugs, inspect repositories, build, and test in the user's persistent Linux development environment lkjyolo. Use for development work when no other execution environment is specified.",
   "extensions": {
@@ -26,5 +27,5 @@
     }
   },
   "name": "lkjyolo",
-  "version": "0.5.0"
+  "version": "0.5.1"
 }

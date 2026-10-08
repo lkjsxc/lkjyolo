@@ -276,7 +276,7 @@ pub fn setup(
         &json!({
             "version":1,"workspace":workspace,"shell":"/bin/bash","output_store_dir":state.join("outputs"),
             "child_env":{"inherit":settings.environment.keys().collect::<Vec<_>>(),"rules":[]},
-            "max_explicit_sessions":64,"max_exec_continuations":128,
+            "max_explicit_sessions":64,"max_exec_continuations":512,
             "explicit_session_idle_timeout":604800,"exec_continuation_idle_timeout":604800,
             "reaper_interval":60,"output_cap_bytes":1048576,"output_store_retention":604800,"output_store_max_bytes":4294967296u64
         }),

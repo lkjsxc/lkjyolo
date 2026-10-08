@@ -245,10 +245,53 @@ fn upstream_call(
     name: &str,
     arguments: Value,
 ) -> Result<Value> {
-    let id = uuid::Uuid::new_v4().to_string();
+    // Legacy Coder deployments require an initialized MCP session. Negotiate
+    // per operation so sessions and credentials cannot cross between callers.
+    let initialize_id = uuid::Uuid::new_v4().to_string();
     let response=client.post(url).bearer_auth(bearer)
         .header("MCP-Protocol-Version","2025-06-18").header(header::ACCEPT,"application/json, text/event-stream")
-        .json(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}})).send()?;
+        .json(&json!({"jsonrpc":"2.0","id":initialize_id,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"lkjyolo","version":VERSION}}})).send()?;
+    let session = response.headers().get("mcp-session-id").cloned();
+    ensure!(
+        session.as_ref().is_none_or(|s| s.as_bytes().len() <= 8192),
+        "Coder returned an oversized session header"
+    );
+    let initialized = decode_upstream_response(response, &initialize_id)?;
+    let version = initialized["protocolVersion"]
+        .as_str()
+        .context("Coder did not negotiate an MCP version")?;
+    ensure!(
+        matches!(
+            version,
+            "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25"
+        ),
+        "Coder negotiated an unsupported MCP version"
+    );
+    let request = || {
+        let mut request = client
+            .post(url)
+            .bearer_auth(bearer)
+            .header("MCP-Protocol-Version", version)
+            .header(header::ACCEPT, "application/json, text/event-stream");
+        if let Some(session) = &session {
+            request = request.header("Mcp-Session-Id", session.clone());
+        }
+        request
+    };
+    let response = request()
+        .json(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+        .send()?;
+    check_upstream_status(&response)?;
+
+    // Never automatically replay a tool call, even if its session expires.
+    let id = uuid::Uuid::new_v4().to_string();
+    let response = request()
+        .json(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}}))
+        .send()?;
+    decode_upstream_response(response, &id)
+}
+
+fn check_upstream_status(response: &reqwest::blocking::Response) -> Result<()> {
     // Never interpolate response bodies (which may contain secrets) into errors.
     if matches!(response.status().as_u16(), 401 | 403) {
         return Err(RejectedCredential.into());
@@ -258,6 +301,11 @@ fn upstream_call(
         "Coder upstream returned HTTP {}",
         response.status().as_u16()
     );
+    Ok(())
+}
+
+fn decode_upstream_response(response: reqwest::blocking::Response, id: &str) -> Result<Value> {
+    check_upstream_status(&response)?;
     let is_sse = response
         .headers()
         .get(header::CONTENT_TYPE)
@@ -299,7 +347,8 @@ fn upstream_call(
     );
     ensure!(
         value.get("error").is_none(),
-        "Coder RPC failed; inspect the original request_id before retrying"
+        "Coder RPC failed (code {}); inspect the original request_id before retrying",
+        value["error"]["code"].as_i64().unwrap_or(0)
     );
     value.get("result").cloned().context("Missing Coder result")
 }
@@ -427,7 +476,16 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         Ok((permit, Ok(true))) => permit,
         Ok((_, Ok(false))) => return unauthorized(&server),
         // Do not leak upstream errors or bearer credentials to clients/logs.
-        _ => {
+        failure => {
+            // Only the error chain is logged. The bridge never puts bearer tokens,
+            // request/response bodies, or user commands in these errors.
+            match failure {
+                Ok((_, Err(error))) => {
+                    eprintln!("lkjyolo: authentication upstream failed: {error:#}");
+                }
+                Err(error) => eprintln!("lkjyolo: authentication task failed: {error}"),
+                _ => unreachable!(),
+            }
             return error(
                 StatusCode::BAD_GATEWAY,
                 Value::Null,
@@ -595,7 +653,8 @@ mod tests {
         let args = json!({"request_id":"bridge-test","cmd":"printf '%s' \"$(date)\"; printf '\\n'","workdir":"/tmp"});
         let expected = args.clone();
         let mock = std::thread::spawn(move || {
-            for index in 0..3 {
+            for step in 0..9 {
+                let index = step / 3;
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -624,6 +683,39 @@ mod tests {
                 let mut bytes = vec![0; size];
                 reader.read_exact(&mut bytes).unwrap();
                 let rpc: Value = serde_json::from_slice(&bytes).unwrap();
+                let session = format!("mcp-session-test-{index}");
+                if step % 3 == 0 {
+                    assert_eq!(rpc["method"], "initialize");
+                    assert_eq!(rpc["params"]["protocolVersion"], "2025-06-18");
+                    assert!(!headers.to_lowercase().contains("mcp-session-id:"));
+                    // Cover both a stateful legacy server and a stateless server.
+                    let session_header = if index == 1 {
+                        String::new()
+                    } else {
+                        format!("Mcp-Session-Id: {session}\r\n")
+                    };
+                    let result = json!({"jsonrpc":"2.0","id":rpc["id"],"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"Coder","version":"test"}}}).to_string();
+                    write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{session_header}Content-Length: {}\r\nConnection: close\r\n\r\n{}",result.len(),result).unwrap();
+                    continue;
+                }
+                let headers = headers.to_lowercase();
+                assert!(headers.contains("mcp-protocol-version: 2025-03-26"));
+                if index == 1 {
+                    assert!(!headers.contains("mcp-session-id:"));
+                } else {
+                    assert!(headers.contains(&format!("mcp-session-id: {session}")));
+                }
+                if step % 3 == 1 {
+                    assert_eq!(rpc["method"], "notifications/initialized");
+                    assert!(rpc.get("id").is_none());
+                    write!(
+                        socket,
+                        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    continue;
+                }
+                assert_eq!(rpc["method"], "tools/call");
                 let body = if index < 2 {
                     assert_eq!(rpc["params"]["name"], "coder_get_authenticated_user");
                     json!({"id":if index==0 {"expected-owner"} else {"other-owner"},"status":"active"})
