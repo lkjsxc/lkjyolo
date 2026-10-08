@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod diagnostics;
 pub mod engine;
 pub mod files;
 pub mod gateway;
@@ -6,6 +7,7 @@ pub mod journal;
 pub mod mcp;
 pub mod package;
 pub mod runtime;
+pub mod sessions;
 pub mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -100,6 +100,250 @@ impl Drop for Fixture {
     }
 }
 
+fn quota_fixture(limit: usize) -> Fixture {
+    let f = Fixture::new();
+    let path = f.path().join("engine.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["max_exec_continuations"] = json!(limit);
+    fs::write(path, config.to_string()).unwrap();
+    f
+}
+
+fn await_file(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(path.exists());
+    // The marker precedes shell exit; let pipe capture finish as well.
+    std::thread::sleep(Duration::from_millis(200));
+}
+
+#[test]
+#[ignore = "requires Linux execution engine"]
+fn quota_recovery_preserves_unread_output_and_replays_without_duplicate_execution() {
+    let f = quota_fixture(1);
+    let command = "sleep .2; printf UNREAD; touch finished";
+    let start = f.body(&[
+        "exec",
+        "--request-id",
+        "forgotten",
+        "--yield-ms",
+        "10",
+        command,
+    ]);
+    let sid = start["session_id"].as_str().unwrap();
+    assert!(sid.starts_with("lkj-"));
+    await_file(&f.path().join("finished"));
+    let before = f.run(&["doctor"])["daemon"].clone();
+    let args = [
+        "exec",
+        "--request-id",
+        "after-quota",
+        "printf X >> counter; printf RECOVERED",
+    ];
+    assert_eq!(f.body(&args)["output"], "RECOVERED");
+    f.run(&args);
+    assert_eq!(fs::read_to_string(f.path().join("counter")).unwrap(), "X");
+    assert_eq!(f.run(&["doctor"])["daemon"], before);
+    let end = f.body(&["poll", "--request-id", "late-poll", sid]);
+    assert_eq!(end["exit_code"], 0);
+    assert_eq!(end["output"], "UNREAD");
+    assert_eq!(f.body(&["poll", "--request-id", "late-poll", sid]), end);
+    assert_eq!(f.body(&["poll", sid])["output"], "");
+    let rejected = f.execute(&["input", sid, "touch should-not-exist\n"], false);
+    assert_eq!(rejected["result"]["execution_may_have_started"], false);
+    assert!(!f.path().join("should-not-exist").exists());
+}
+
+#[test]
+#[ignore = "requires Linux execution engine"]
+fn concurrent_admission_recovers_once_and_archived_handle_cannot_target_reused_id() {
+    let f = quota_fixture(1);
+    let start = f.body(&[
+        "exec",
+        "--yield-ms",
+        "10",
+        "sleep .2; printf OLD; touch finished",
+    ]);
+    let sid = start["session_id"].as_str().unwrap();
+    await_file(&f.path().join("finished"));
+    std::thread::scope(|scope| {
+        let jobs: Vec<_> = (0..4)
+            .map(|i| {
+                let f = &f;
+                scope.spawn(move || {
+                    f.body(&[
+                        "exec",
+                        "--request-id",
+                        &format!("parallel-{i}"),
+                        &format!("printf X >> counter-{i}"),
+                    ])
+                })
+            })
+            .collect();
+        for job in jobs {
+            assert_eq!(job.join().unwrap()["exit_code"], 0);
+        }
+    });
+    for i in 0..4 {
+        assert_eq!(
+            fs::read_to_string(f.path().join(format!("counter-{i}"))).unwrap(),
+            "X"
+        );
+    }
+    let current = f.body(&["exec", "--tty", "/bin/bash"]);
+    let current_id = current["session_id"].as_str().unwrap();
+    let journal = lkjyolo::journal::Journal::new(f.path()).unwrap();
+    // Model upstream's permitted reuse of the old human-readable ID. The
+    // archived logical handle must not send input or polling to this live shell.
+    journal.db.execute("UPDATE managed_sessions SET engine_id=(SELECT engine_id FROM managed_sessions WHERE handle=?) WHERE handle=?", rusqlite::params![current_id,sid]).unwrap();
+    assert_eq!(f.body(&["poll", sid])["output"], "OLD");
+    f.execute(&["input", sid, "touch wrong-session\n"], false);
+    assert!(!f.path().join("wrong-session").exists());
+    assert!(
+        f.body(&["input", current_id, "printf CURRENT\n"])["output"]
+            .as_str()
+            .unwrap()
+            .contains("CURRENT")
+    );
+    f.body(&["input", current_id, "exit\n"]);
+}
+
+#[test]
+#[ignore = "requires Linux execution engine"]
+fn quota_recovery_keeps_live_shell_and_full_truncated_log() {
+    let f = quota_fixture(2);
+    let shell = f.body(&["exec", "--tty", "/bin/bash"]);
+    let shell_id = shell["session_id"].as_str().unwrap();
+    let start = f.body(&[
+        "exec",
+        "--yield-ms",
+        "10",
+        "sleep .2; awk 'BEGIN {for(i=0;i<100000;i++) printf \"z\"}'; touch finished",
+    ]);
+    let sid = start["session_id"].as_str().unwrap();
+    await_file(&f.path().join("finished"));
+    assert_eq!(f.body(&["exec", "printf NEW"])["output"], "NEW");
+    let end = f.body(&["poll", sid]);
+    assert_eq!(end["exit_code"], 0);
+    assert_eq!(end["output_truncated"], true);
+    let raw = f.run(&[
+        "log",
+        end["output_ref"]["path"].as_str().unwrap(),
+        "--limit",
+        "200000",
+    ]);
+    assert_eq!(raw["text"], "z".repeat(100000));
+    let output = f.body(&["input", shell_id, "printf STILL_ALIVE\n"]);
+    assert!(output["output"].as_str().unwrap().contains("STILL_ALIVE"));
+    assert_eq!(f.body(&["input", shell_id, "exit\n"])["exit_code"], 0);
+}
+
+#[test]
+#[ignore = "requires Linux execution engine"]
+fn archived_output_respects_later_smaller_budget_without_losing_utf8() {
+    let f = quota_fixture(1);
+    let start = f.body(&[
+        "exec",
+        "--yield-ms",
+        "10",
+        "sleep .2; printf 'あいうえお'; touch finished",
+    ]);
+    let sid = start["session_id"].as_str().unwrap();
+    await_file(&f.path().join("finished"));
+    f.body(&["exec", "true"]);
+    let mut output = String::new();
+    for _ in 0..10 {
+        let part = f.body(&["poll", "--max-output-tokens", "1", sid]);
+        let text = part["output"].as_str().unwrap();
+        assert!(text.len() <= 4);
+        output.push_str(text);
+        if part["exit_code"].is_number() {
+            assert_eq!(part["exit_code"], 0);
+            assert_eq!(output, "あいうえお");
+            return;
+        }
+        assert_eq!(part["session_id"], sid);
+    }
+    panic!("buffered output did not finish");
+}
+
+#[test]
+#[ignore = "requires Linux execution engine"]
+fn all_live_quota_is_reported_without_killing_or_replaying_commands() {
+    let f = quota_fixture(1);
+    let start = f.body(&["exec", "--tty", "/bin/bash"]);
+    let failed = f.execute(&["exec", "touch unexpected"], false);
+    assert!(failed.to_string().contains("quota reached"));
+    assert!(!f.path().join("unexpected").exists());
+    let sid = start["session_id"].as_str().unwrap();
+    let output = f.body(&["input", sid, "printf ALIVE\n"]);
+    assert!(output["output"].as_str().unwrap().contains("ALIVE"));
+    f.body(&["input", sid, "exit\n"]);
+}
+
+#[test]
+#[ignore = "requires Linux execution engine"]
+fn quota_recovery_imports_legacy_sessions_without_engine_restart() {
+    let f = quota_fixture(1);
+    let engine = Engine::new(f.path()).unwrap();
+    let identity = engine.ensure().unwrap();
+    let journal = lkjyolo::journal::Journal::new(f.path()).unwrap();
+    let args = json!({"cmd":"sleep .2; printf LEGACY; touch finished","yield_time_ms":10});
+    journal
+        .prepare("pre-upgrade", "exec_command", &args)
+        .unwrap();
+    journal
+        .generation("pre-upgrade", &identity.generation)
+        .unwrap();
+    let value = engine
+        .rpc(
+            "tools/call",
+            json!({"name":"exec_command","arguments":args}),
+            10,
+        )
+        .unwrap();
+    journal.finish("pre-upgrade", "done", &value).unwrap();
+    let body = result_body(&value);
+    let sid = body["session_id"].as_str().unwrap();
+    await_file(&f.path().join("finished"));
+    assert_eq!(f.body(&["exec", "printf UPGRADED"])["output"], "UPGRADED");
+    assert_eq!(f.body(&["poll", sid])["output"], "LEGACY");
+    assert_eq!(engine.identity().unwrap().generation, identity.generation);
+}
+
+#[test]
+#[ignore = "requires Linux execution engine"]
+fn uncertain_liveness_buffers_output_without_interrupting_process() {
+    let f = quota_fixture(1);
+    let start = f.body(&["exec", "--yield-ms", "10", "exec env -u CHATGPT_EXEC_SESSION sh -c 'sleep .2; printf BUFFERED; touch ready; while [ ! -e finish ]; do sleep .1; done; printf FINAL'"]);
+    let sid = start["session_id"].as_str().unwrap();
+    await_file(&f.path().join("ready"));
+    let failed = f.execute(&["exec", "touch unexpected"], false);
+    assert!(failed.to_string().contains("quota reached"));
+    let journal = lkjyolo::journal::Journal::new(f.path()).unwrap();
+    let pending: Option<String> = journal
+        .db
+        .query_row(
+            "SELECT pending FROM managed_sessions WHERE handle=?",
+            [sid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(pending.unwrap().contains("BUFFERED"));
+    f.execute(&["input", sid, "touch wrong-input\n"], false);
+    fs::write(f.path().join("finish"), "").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(f.body(&["exec", "printf RETRIED"])["output"], "RETRIED");
+    let pending = f.body(&["poll", sid]);
+    assert_eq!(pending["output"], "BUFFERED");
+    assert_eq!(pending["session_id"], sid);
+    let end = f.body(&["wait", "--seconds", "15", sid]);
+    assert_eq!(end["exit_code"], 0);
+    assert_eq!(end["output"], "FINAL");
+}
+
 #[test]
 #[ignore = "requires Linux execution engine"]
 fn direct_mcp_exec_file_edit_replay_and_recovery() {
@@ -443,7 +687,7 @@ fn running_legacy_worker_identity_is_not_marked_unknown() {
 
 #[test]
 #[ignore = "requires Linux execution engine"]
-fn overlapping_wait_and_poll_keep_the_last_observed_exit() {
+fn serialized_wait_and_poll_keep_the_last_observed_exit() {
     let f = Fixture::new();
     let gate = f.path().join("finish");
     let start = f.body(&[
@@ -467,26 +711,65 @@ fn overlapping_wait_and_poll_keep_the_last_observed_exit() {
         waiting["status"].as_str(),
         Some("queued" | "running")
     ));
-    let poll = f.body(&["poll", "--request-id", "overlap-poll", sid]);
-    assert_eq!(poll["session_id"], sid);
-    assert!(poll.get("exit_code").is_none());
+    let journal = Journal::new(f.path()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while journal.get("overlap-wait").unwrap().generation.is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Observe the held lock instead of relying on worker scheduling delays.
+    let lock_path = f
+        .path()
+        .join("session-locks")
+        .join(format!("{}.lock", lkjyolo::util::sha256(sid.as_bytes())));
+    loop {
+        assert!(Instant::now() < deadline);
+        if let Ok(file) = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+        {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("{error}"),
+                Ok(()) => fs2::FileExt::unlock(&file).unwrap(),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let polling = f.run(&[
+        "poll",
+        "--request-id",
+        "overlap-poll",
+        "--client-wait",
+        "0",
+        sid,
+    ]);
+    assert!(matches!(
+        polling["status"].as_str(),
+        Some("queued" | "running")
+    ));
 
-    // The process cannot finish until the later-created poll has completed.
+    // Session operations are serialized, so release the process before
+    // collecting the queued poll. Both callers must observe the same exit.
     fs::write(gate, b"finish").unwrap();
     let finished = f.run(&["result", "overlap-wait", "--wait", "45"]);
     assert_eq!(finished["status"], "done");
     assert_eq!(result_body(&finished["result"])["exit_code"], 7);
+    let polled = f.run(&["result", "overlap-poll", "--wait", "45"]);
+    assert_eq!(polled["status"], "done");
+    assert_eq!(result_body(&polled["result"])["exit_code"], 7);
     let journal = Journal::new(f.path()).unwrap();
     let wait = journal.get("overlap-wait").unwrap();
     let poll = journal.get("overlap-poll").unwrap();
     assert!(wait.created < poll.created);
-    assert!(wait.updated > poll.updated);
+    assert!(wait.updated <= poll.updated);
 
     let observed = f.run(&["sessions"]);
     let session = &observed["sessions"][0];
     assert_eq!(session["status"], "exited");
     assert_eq!(session["exit_code"], 7);
-    assert_eq!(session["last_request_id"], "overlap-wait");
+    assert_eq!(session["last_request_id"], "overlap-poll");
     // Compare timestamps after the same public JSON serialization boundary.
-    assert_eq!(session["last_seen_at"], finished["updated_at"]);
+    assert_eq!(session["last_seen_at"], polled["updated_at"]);
 }
