@@ -73,12 +73,52 @@ read back and matched the candidate. Existing author metadata, full prompts,
 app binding, MCP endpoint, scope and audience were preserved. Saving and
 read-back do not establish whether every installed client refreshed its cache.
 
-## Remaining gateway rollout
+## Gateway rollout completed
 
-The existing gateway executable has not been replaced. NetBird SSH requested
-device authentication, then expired waiting for the JWT token. No remote
-service restart or configuration change was attempted. Gateway replacement
-requires renewed NetBird login; the authenticated public gateway already
-executes the upgraded workspace CLI and the diagnostic helper successfully.
+NetBird device authentication was renewed by the owner. The existing policy
+accepted an authenticated root SSH connection to `archserver`; no sudoers,
+SSH policy, group membership or management credential changes were needed.
+Host root UUID `ff870ada-399f-48af-a72f-eba83c50aea0` and Incus pool UUID
+`68bc4d9d-fffc-471c-b276-f69f73eb84a9` were verified before deployment.
+
+Under the existing host `private/operations.lock`, the prior gateway binary,
+configuration and systemd unit were backed up to the root-only directory
+`/root/lkjyolo-gateway-rollout-20261008T045600Z`. The candidate SHA-256 and
+version were checked inside `foundation/forgejo` before an atomic rename.
+Only `lkjyolo-gateway.service` was restarted. At
+`2026-10-08T04:56:46.223555Z`, its new PID was `276316`, its version was
+0.3.3, and `/lkjyolo/healthz` returned `status=ok, version=0.3.3`.
+
+The deployed binary's SHA-256 matches the workspace CLI:
+`4e5cee173ee89c751ad68f7eb4facfb8cd88d1a4e31fadc12fc3edd934f5d21f`.
+The prior binary hash was
+`4e211c95194a0c299a8d37d436fe7584012cda480c66d5f870c3efb14d51e9a4`.
+Gateway configuration and service-file hashes matched before and after:
+`664b6c05e647d805b0bf5fc75a97fc27344e55a39c63c761946e06d72e837890`
+and `da483f79725cb7647fe5e7fe16d6d55c6938fddd7ccada08b5ab913df8a665dc`.
+NGINX, Forgejo and Coder retained PIDs `2598`, `133722` and `147893`.
+The gateway still listens only on `127.0.0.1:8787`.
+
+After deployment, authenticated public MCP execution returned the 0.3.3
+version and a continuation handle. Empty-input polling collected its remaining
+output with exit code 0, and `get_result` recovered the same saved receipt.
+Public unauthenticated MCP initialization returned 401; OAuth metadata retained
+the existing Coder resource and issuer; Coder health remained `OK`.
+The workspace engine retained PID `1116066` and generation
+`4c36fa6cd2d446d78d6755b8e2c8f659`.
+
+To restore the preserved gateway binary, run on the physical host as root:
+
+```sh
+/root/lkjyolo-gateway-rollout-20261008T045600Z/rollback.sh
+```
+
+The rollback acquires the host writer lock, atomically restores the old binary
+and restarts only the gateway. It does not restore databases or workspace state.
+Pre/post observations and the rollback script remain in the root-only directory.
+
+## Deferred engine capacity activation
+
 The separate 512-continuation engine setting remains staged until an engine
-restart can be scheduled without terminating active work.
+restart can be scheduled without terminating active work. Gateway and CLI
+rollout did not restart that shared engine; its effective limit remains 128.
