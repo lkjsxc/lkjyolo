@@ -1,6 +1,10 @@
 //! Stateless Streamable HTTP gateway. Coder credentials never reach the workspace,
 //! disk, process arguments, receipts or logs. The upstream is the same OAuth resource.
-use crate::{VERSION, mcp};
+use crate::bootstrap::Bootstrap;
+use crate::{
+    VERSION, mcp,
+    routing::{Identity, OwnedWorkspaces, Routing, verify_owner},
+};
 use anyhow::{Context, Result, bail, ensure};
 use axum::{
     Router,
@@ -49,8 +53,14 @@ pub enum BackendConfig {
         token_file: PathBuf,
     },
     Coder {
-        owner_id: String,
-        workspace: String,
+        #[serde(default)]
+        owner_id: Option<String>,
+        #[serde(default)]
+        workspace: Option<String>,
+        #[serde(default)]
+        owned_workspaces: Option<OwnedWorkspaces>,
+        #[serde(default)]
+        bootstrap: Option<Bootstrap>,
         #[serde(default)]
         upstream_ip: Option<IpAddr>,
         #[serde(default = "default_cli")]
@@ -69,8 +79,8 @@ enum Backend {
     Coder {
         client: Client,
         upstream: String,
-        owner_id: String,
-        workspace: String,
+        routing: Routing,
+        bootstrap: Option<Bootstrap>,
         cli: String,
     },
 }
@@ -120,18 +130,13 @@ impl Server {
             BackendConfig::Coder {
                 owner_id,
                 workspace,
+                owned_workspaces,
+                bootstrap,
                 cli,
                 upstream_ip,
             } => {
                 ensure!(url.scheme() == "https", "Coder OAuth requires HTTPS");
-                ensure!(
-                    !owner_id.is_empty()
-                        && workspace.split('/').count() == 2
-                        && workspace
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b)),
-                    "Set an exact owner ID and owner/workspace"
-                );
+                let routing = Routing::new(owner_id, workspace, owned_workspaces)?;
                 ensure!(
                     cli.starts_with('/')
                         && cli
@@ -139,6 +144,9 @@ impl Server {
                             .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b)),
                     "cli must be a simple absolute path"
                 );
+                if let Some(ref bootstrap) = bootstrap {
+                    bootstrap.validate(&origin, &cli)?;
+                }
                 let mut builder = Client::builder()
                     .timeout(Duration::from_secs(70))
                     .connect_timeout(Duration::from_secs(10))
@@ -156,8 +164,8 @@ impl Server {
                 Backend::Coder {
                     client,
                     upstream: format!("{origin}/api/experimental/mcp/http"),
-                    owner_id,
-                    workspace,
+                    routing,
+                    bootstrap,
                     cli,
                 }
             }
@@ -170,7 +178,7 @@ impl Server {
         })
     }
 
-    fn authorized(&self, bearer: &str) -> Result<bool> {
+    fn authorized(&self, bearer: &str) -> Result<Option<Identity>> {
         match &self.backend {
             Backend::Local { token, .. } => {
                 let bytes = bearer.as_bytes();
@@ -178,12 +186,12 @@ impl Server {
                 for (i, b) in token.iter().enumerate() {
                     diff |= usize::from(*b ^ bytes.get(i).copied().unwrap_or(0));
                 }
-                Ok(diff == 0)
+                Ok((diff == 0).then(|| Identity { id: "local".into() }))
             }
             Backend::Coder {
                 client,
                 upstream,
-                owner_id,
+                routing,
                 ..
             } => {
                 let response = match upstream_call(
@@ -194,33 +202,76 @@ impl Server {
                     json!({}),
                 ) {
                     Ok(value) => value,
-                    Err(e) if e.is::<RejectedCredential>() => return Ok(false),
+                    Err(e) if e.is::<RejectedCredential>() => return Ok(None),
                     Err(e) => return Err(e),
                 };
-                let body = crate::runtime::result_body(&response);
-                Ok(response["isError"] != true
-                    && body["id"] == *owner_id
-                    && body["status"] == "active")
+                let body = upstream_body(&response);
+                Ok(if response["isError"] == true {
+                    None
+                } else {
+                    routing.identity(&body)
+                })
             }
         }
     }
 
-    fn call(&self, bearer: &str, name: &str, args: Value) -> Result<Value> {
+    fn call(&self, bearer: &str, identity: &Identity, name: &str, args: Value) -> Result<Value> {
         mcp::validate(name, &args)?;
         match &self.backend {
             Backend::Local { state, .. } => mcp::call(state, name, args),
             Backend::Coder {
                 client,
                 upstream,
-                workspace,
+                routing,
+                bootstrap,
                 cli,
                 ..
             } => {
+                let workspace = match routing {
+                    Routing::Single {
+                        owner_id,
+                        workspace,
+                    } => {
+                        ensure!(identity.id == *owner_id, "Owner mismatch");
+                        workspace.clone()
+                    }
+                    Routing::Owned(_) => {
+                        let listed = upstream_call(
+                            client,
+                            upstream,
+                            bearer,
+                            "coder_list_workspaces",
+                            json!({"owner":"me"}),
+                        )?;
+                        ensure!(
+                            listed["isError"] != true,
+                            "Could not list your Coder workspaces"
+                        );
+                        let id = routing.select(identity, &upstream_body(&listed))?;
+                        let inspected = upstream_call(
+                            client,
+                            upstream,
+                            bearer,
+                            "coder_get_workspace",
+                            json!({"workspace_id":id}),
+                        )?;
+                        ensure!(
+                            inspected["isError"] != true,
+                            "Could not verify your Coder workspace"
+                        );
+                        verify_owner(identity, &id, &upstream_body(&inspected))?;
+                        id
+                    }
+                };
                 let payload = base64::engine::general_purpose::STANDARD
                     .encode(serde_json::to_vec(&json!({"name":name,"arguments":args}))?);
                 // Only a validated path and the standard base64 alphabet enter the shell.
                 // User commands are data inside the payload; the OAuth token is never included.
-                let command = format!("{cli} mcp-call --json-base64 '{payload}'");
+                let prefix = bootstrap
+                    .as_ref()
+                    .map(|b| b.prefix(cli))
+                    .unwrap_or_default();
+                let command = format!("{prefix}{cli} mcp-call --json-base64 '{payload}'");
                 let response = upstream_call(
                     client,
                     upstream,
@@ -228,7 +279,7 @@ impl Server {
                     "coder_workspace_bash",
                     json!({"workspace":workspace,"command":command,"timeout_ms":60000}),
                 )?;
-                let body = crate::runtime::result_body(&response);
+                let body = upstream_body(&response);
                 let output=body["output"].as_str().context("Coder did not return command output; recover using get_result with the original request_id")?;
                 let value: Value=serde_json::from_str(output).context("Incomplete workspace response; recover using get_result with the original request_id")?;
                 ensure!(value.is_object(), "Unexpected workspace response");
@@ -236,6 +287,24 @@ impl Server {
             }
         }
     }
+}
+
+fn upstream_body(result: &Value) -> Value {
+    if result["structuredContent"].is_object() || result["structuredContent"].is_array() {
+        return result["structuredContent"].clone();
+    }
+    if let Some(parts) = result["content"].as_array() {
+        for part in parts {
+            if part["type"] == "text"
+                && let Some(text) = part["text"].as_str()
+                && let Ok(value) = serde_json::from_str::<Value>(text)
+                && (value.is_object() || value.is_array())
+            {
+                return value;
+            }
+        }
+    }
+    Value::Null
 }
 
 fn upstream_call(
@@ -472,9 +541,9 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         (permit, result)
     })
     .await;
-    let permit = match auth {
-        Ok((permit, Ok(true))) => permit,
-        Ok((_, Ok(false))) => return unauthorized(&server),
+    let (permit, identity) = match auth {
+        Ok((permit, Ok(Some(identity)))) => (permit, identity),
+        Ok((_, Ok(None))) => return unauthorized(&server),
         // Do not leak upstream errors or bearer credentials to clients/logs.
         failure => {
             // Only the error chain is logged. The bridge never puts bearer tokens,
@@ -590,7 +659,7 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             // release capacity while the upstream call is still in flight.
             match tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                call_server.call(&bearer, &name, args)
+                call_server.call(&bearer, &identity, &name, args)
             })
             .await
             {
@@ -755,27 +824,177 @@ mod tests {
                     .build()
                     .unwrap(),
                 upstream: format!("http://{address}"),
-                owner_id: "expected-owner".into(),
-                workspace: "owner/workspace".into(),
+                routing: Routing::Single {
+                    owner_id: "expected-owner".into(),
+                    workspace: "owner/workspace".into(),
+                },
+                bootstrap: None,
                 cli: default_cli(),
             },
         };
-        assert!(server.authorized("test-bearer-only-for-coder").unwrap());
-        assert!(!server.authorized("test-bearer-only-for-coder").unwrap());
+        let identity = server
+            .authorized("test-bearer-only-for-coder")
+            .unwrap()
+            .unwrap();
+        assert!(
+            server
+                .authorized("test-bearer-only-for-coder")
+                .unwrap()
+                .is_none()
+        );
         assert!(
             server
                 .call(
                     "test-bearer-only-for-coder",
+                    &identity,
                     "coder_delete_workspace",
                     json!({})
                 )
                 .is_err()
         );
         let result = server
-            .call("test-bearer-only-for-coder", "exec_command", args)
+            .call(
+                "test-bearer-only-for-coder",
+                &identity,
+                "exec_command",
+                args,
+            )
             .unwrap();
         assert_eq!(result["exit_code"], 7);
         assert_eq!(result["output"], "verbatim result");
+        mock.join().unwrap();
+    }
+    #[test]
+    fn owned_routing_isolates_users_and_rejects_foreign_workspace_before_execution() {
+        const ALICE: &str = "10000000-0000-0000-0000-000000000001";
+        const BOB: &str = "10000000-0000-0000-0000-000000000002";
+        const AWORK: &str = "20000000-0000-0000-0000-000000000001";
+        const BWORK: &str = "20000000-0000-0000-0000-000000000002";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mock = std::thread::spawn(move || {
+            let mut executions = Vec::new();
+            for _ in 0..33 {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut socket);
+                let mut size = 0;
+                let mut bearer = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((key, value)) = line.split_once(':') {
+                        if key.eq_ignore_ascii_case("content-length") {
+                            size = value.trim().parse().unwrap();
+                        }
+                        if key.eq_ignore_ascii_case("authorization") {
+                            bearer = value.trim().to_owned();
+                        }
+                    }
+                }
+                let mut bytes = vec![0; size];
+                reader.read_exact(&mut bytes).unwrap();
+                let rpc: Value = serde_json::from_slice(&bytes).unwrap();
+                let alice = bearer == "Bearer alice-credential";
+                let hostile = bearer == "Bearer foreign-list-credential";
+                let user = if alice { ALICE } else { BOB };
+                let workspace = if alice || hostile { AWORK } else { BWORK };
+                let result = match rpc["method"].as_str().unwrap() {
+                    "initialize" => {
+                        json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"Coder","version":"test"}})
+                    }
+                    "notifications/initialized" => {
+                        write!(socket,"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                        continue;
+                    }
+                    "tools/call" => {
+                        let body = match rpc["params"]["name"].as_str().unwrap() {
+                            "coder_get_authenticated_user" => json!({"id":user,"status":"active"}),
+                            "coder_list_workspaces" => {
+                                assert_eq!(rpc["params"]["arguments"], json!({"owner":"me"}));
+                                json!([{"id":workspace,"name":"lkjyolo"}])
+                            }
+                            "coder_get_workspace" => {
+                                assert_eq!(rpc["params"]["arguments"]["workspace_id"], workspace);
+                                json!({"id":workspace,"owner_id":if hostile {ALICE} else {user}})
+                            }
+                            "coder_workspace_bash" => {
+                                assert!(!hostile, "A foreign workspace must never execute");
+                                assert_eq!(rpc["params"]["arguments"]["workspace"], workspace);
+                                let command =
+                                    rpc["params"]["arguments"]["command"].as_str().unwrap();
+                                assert!(!command.contains("credential"));
+                                let encoded = command.split('\'').nth(1).unwrap();
+                                let payload: Value = serde_json::from_slice(
+                                    &base64::engine::general_purpose::STANDARD
+                                        .decode(encoded)
+                                        .unwrap(),
+                                )
+                                .unwrap();
+                                assert_eq!(payload["name"], "get_result");
+                                assert_eq!(payload["arguments"]["request_id"], "same-id");
+                                executions.push(workspace.to_owned());
+                                json!({"output":json!({"request_id":"same-id","output":user}).to_string(),"exit_code":0})
+                            }
+                            other => panic!("Unexpected tool {other}"),
+                        };
+                        json!({"content":[{"type":"text","text":body.to_string()}],"isError":false})
+                    }
+                    other => panic!("Unexpected method {other}"),
+                };
+                let body = json!({"jsonrpc":"2.0","id":rpc["id"],"result":result}).to_string();
+                write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            }
+            assert_eq!(executions, vec![AWORK.to_owned(), BWORK.to_owned()]);
+        });
+        let server = Server {
+            origin: "https://coder.example.com".into(),
+            authority: "coder.example.com".into(),
+            permits: Arc::new(Semaphore::new(16)),
+            backend: Backend::Coder {
+                client: Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(5))
+                    .build()
+                    .unwrap(),
+                upstream: format!("http://{address}"),
+                routing: Routing::new(None, None, Some(serde_json::from_value(json!({})).unwrap()))
+                    .unwrap(),
+                bootstrap: None,
+                cli: default_cli(),
+            },
+        };
+        for (token, expected) in [("alice-credential", ALICE), ("bob-credential", BOB)] {
+            let identity = server.authorized(token).unwrap().unwrap();
+            let result = server
+                .call(
+                    token,
+                    &identity,
+                    "get_result",
+                    json!({"request_id":"same-id"}),
+                )
+                .unwrap();
+            assert_eq!(result["output"], expected);
+        }
+        let token = "foreign-list-credential";
+        let identity = server.authorized(token).unwrap().unwrap();
+        assert!(
+            server
+                .call(
+                    token,
+                    &identity,
+                    "get_result",
+                    json!({"request_id":"same-id"})
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("ownership")
+        );
         mock.join().unwrap();
     }
 }

@@ -21,12 +21,16 @@ Examples that should activate this skill, including Japanese requests:
 
 ## Connect and choose the first action
 
-Endpoint: `https://coder.lkjsxc.com/lkjyolo/mcp`, using Coder OAuth and the
-existing authentik login. If the tools are not loaded, use the host's tool search
+Use this installation's configured lkjyolo MCP endpoint with Coder OAuth.
+Each person connects their own Coder account. If the tools are not loaded, use the host's tool search
 for `lkjyolo exec_command read_file`. A 401 response requires the host's connection
 flow; never ask the user to paste credentials into chat.
 
-The server already selects the default workspace. Routine development needs no
+The server selects a workspace owned by the authenticated user. It uses an
+administrator's per-user mapping, a workspace named `lkjyolo`, or the user's
+only workspace, in that order. If selection is missing or ambiguous, explain
+the returned setup guidance; do not choose another user's environment.
+First-use runtime installation may be automatic when the deployment enables it. Routine development needs no
 Coder user lookup, workspace listing, or `doctor` call. The Linux user is `coder`,
 home is `/home/coder`, and the workspace root is `/home/coder/workspace`.
 For a known repository, inspect its Git status and applicable `AGENTS.md` before

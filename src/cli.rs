@@ -67,6 +67,12 @@ pub enum Action {
         source: PathBuf,
         #[arg(long, default_value = "dist")]
         output: PathBuf,
+        /// Omit private App bindings for distribution to other accounts
+        #[arg(long)]
+        portable: bool,
+        /// Set another deployment's HTTPS MCP URL in the portable package
+        #[arg(long, requires = "portable")]
+        endpoint: Option<String>,
     },
     Doctor,
     Tools,
@@ -191,7 +197,12 @@ pub fn dispatch(cli: Cli) -> Result<Option<Value>> {
         Action::Install { workspace } => {
             package::install(&state, &workspace.unwrap_or(home()?.join("workspace")))?
         }
-        Action::PackagePlugin { source, output } => package::plugin_zip(&source, &output)?,
+        Action::PackagePlugin {
+            source,
+            output,
+            portable,
+            endpoint,
+        } => package::plugin_zip_options(&source, &output, portable, endpoint.as_deref())?,
         Action::Doctor => runtime::doctor(&state)?,
         Action::Tools => {
             let engine = engine::Engine::new(&state)?;

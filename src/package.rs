@@ -136,6 +136,30 @@ fn files(directory: &Path, result: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 pub fn plugin_zip(source: &Path, output: &Path) -> Result<Value> {
+    plugin_zip_options(source, output, false, None)
+}
+
+pub fn plugin_zip_options(
+    source: &Path,
+    output: &Path,
+    portable: bool,
+    endpoint: Option<&str>,
+) -> Result<Value> {
+    ensure!(
+        portable || endpoint.is_none(),
+        "Endpoint overrides require --portable"
+    );
+    if let Some(endpoint) = endpoint {
+        let url = reqwest::Url::parse(endpoint)?;
+        ensure!(
+            url.scheme() == "https"
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none(),
+            "Endpoint must be HTTPS without credentials, query or fragment"
+        );
+    }
     let source = source.canonicalize()?;
     let read = |name: &str| -> Result<Value> {
         Ok(serde_json::from_slice(&fs::read(source.join(name))?)?)
@@ -191,20 +215,48 @@ pub fn plugin_zip(source: &Path, output: &Path) -> Result<Value> {
         !output.starts_with(&source),
         "Plugin output must be outside the source directory"
     );
-    let target = output.join(format!("lkjyolo-{version}.zip"));
+    let suffix = if portable { "-portable" } else { "" };
+    let target = output.join(format!("lkjyolo-{version}{suffix}.zip"));
     let mut archive = ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o644);
+    let mut file_count = 0;
     for file in &inventory {
         let relative = file
             .strip_prefix(&source)?
             .to_str()
             .context("Plugin file name is not UTF-8")?;
+        if portable && relative == ".app.json" {
+            continue;
+        }
+        let mut data = fs::read(file)?;
+        if portable && ["plugin.json", ".codex-plugin/plugin.json"].contains(&relative) {
+            let mut value: Value = serde_json::from_slice(&data)?;
+            value
+                .as_object_mut()
+                .context("Invalid manifest")?
+                .remove("apps");
+            if let Some(openai) = value
+                .pointer_mut("/extensions/com.openai")
+                .and_then(Value::as_object_mut)
+            {
+                openai.remove("apps");
+            }
+            data = serde_json::to_vec_pretty(&value)?;
+        }
+        if let Some(endpoint) = endpoint
+            && ["mcp.json", ".mcp.json"].contains(&relative)
+        {
+            let mut value: Value = serde_json::from_slice(&data)?;
+            value["mcpServers"]["lkjyolo"]["url"] = json!(endpoint);
+            data = serde_json::to_vec_pretty(&value)?;
+        }
         archive.start_file(format!("lkjyolo/{relative}"), options)?;
-        archive.write_all(&fs::read(file)?)?;
+        archive.write_all(&data)?;
+        file_count += 1;
     }
     let data = archive.finish()?.into_inner();
     atomic_write(&target, &data, 0o644)?;
-    Ok(json!({"archive":target,"files":inventory.len(),"plugin_version":version}))
+    Ok(json!({"archive":target,"files":file_count,"plugin_version":version,"portable":portable}))
 }

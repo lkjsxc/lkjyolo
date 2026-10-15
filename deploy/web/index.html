@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lkjyolo — 自分の開発環境を、チャットから。</title>
+<meta name="description" content="ChatGPT・Codexから自分専用の永続Linux環境で開発。アカウント申請と接続の手順。">
+<style>
+:root{color-scheme:light dark;--bg:#f5f4ef;--fg:#202722;--muted:#58675d;--line:#cdd4cb;--card:#fffef9;--accent:#275c40}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.8 system-ui,-apple-system,sans-serif}main{max-width:880px;margin:auto;padding:56px 24px 80px}header{display:flex;align-items:center;justify-content:space-between;font-size:14px;letter-spacing:.06em}header strong{font-size:23px;letter-spacing:-.04em}.badge{border:1px solid var(--line);border-radius:30px;padding:3px 12px;color:var(--muted);font-size:12px}h1{font-size:clamp(32px,6vw,54px);letter-spacing:-.035em;line-height:1.4;margin:66px 0 22px}p{margin:0 0 22px}a{color:var(--accent);text-underline-offset:4px}.intro{font-size:18px;color:var(--muted);max-width:650px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:28px 0 48px}.button{display:inline-block;text-decoration:none;background:var(--accent);color:white;padding:12px 20px;border-radius:9px;font-weight:650}.secondary{background:transparent;border:1px solid var(--line);color:var(--accent)}h2{font-size:23px;margin:36px 0 16px}.steps{display:grid;gap:12px;counter-reset:steps}.step{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px;display:grid;grid-template-columns:36px 1fr;gap:16px}.step:before{counter-increment:steps;content:counter(steps);width:32px;height:32px;border:1px solid var(--line);border-radius:50%;text-align:center;line-height:30px;color:var(--muted)}h3{font-size:18px;margin:0 0 7px}.step p{margin:0;color:var(--muted)}.endpoint{margin-top:14px;border:1px solid var(--line);border-radius:8px;padding:13px;background:var(--bg);overflow-wrap:anywhere;font:14px/1.7 ui-monospace,monospace}details{border-bottom:1px solid var(--line);padding:18px 0}summary{cursor:pointer;font-weight:600}details p{color:var(--muted);margin:12px 0 0}footer{margin-top:55px;padding-top:22px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}footer a{margin-right:20px}@media(prefers-color-scheme:dark){:root{--bg:#141c17;--fg:#e9efe8;--muted:#adbaae;--line:#35483a;--card:#1c2820;--accent:#83c69a}.button{color:#142219}.secondary{color:var(--accent)}}@media(max-width:520px){main{padding:28px 18px 56px}h1{margin-top:44px}.step{padding:18px;gap:10px}.actions{gap:8px}.button{padding:11px 14px}}
+</style>
+<main><header><strong>lkjyolo<span aria-hidden="true">_</span></strong><span class="badge">承認制で提供中</span></header>
+<h1>自分の開発環境を、<br>チャットから。</h1>
+<p class="intro">実装、バグ修正、ビルド、テスト。ChatGPT・Codexから、自分専用の永続Linux環境で作業できます。ファイルも実行履歴も、あなたの環境に残ります。</p>
+<div class="actions"><a class="button" href="https://auth.lkjsxc.com/if/flow/account-request/">アカウントを申請</a><a class="button secondary" href="https://coder.lkjsxc.com">Coderにログイン</a></div>
+<h2>使い始めるまで</h2><div class="steps">
+<section class="step"><div><h3>自分のアカウントを用意</h3><p>初めての方はアカウントを申請してください。管理者の承認後にログインできます。既存アカウントがあれば、そのまま使えます。</p></div></section>
+<section class="step"><div><h3>自分の開発環境を作成</h3><p>CoderのTemplatesから「tiered-workspace」を選び、環境名を「lkjyolo」にします。既存の環境が1つだけなら、その環境を使えます。CPU・メモリ・ディスクは割り当て済みの利用枠に従います。</p></div></section>
+<section class="step"><div><h3>ChatGPT・Codexから接続</h3><p>ChatGPTではPluginsの「＋」→「Add custom MCP server」で、名前を「lkjyolo」、認証を「OAuth」にして追加します。自分のCoderアカウントで許可し、プラグインをインストールしてください。</p><div class="endpoint">https://coder.lkjsxc.com/lkjyolo/mcp</div><p style="margin-top:12px;font-size:14px">スコープの入力が必要な場合は coder:all。カスタムMCP接続を追加できるアカウント・組織設定が必要です。</p></div></section>
+<section class="step"><div><h3>いつもの言葉で依頼</h3><p>Workのチャットで「@lkjyolo」を選び、「作業用フォルダーを確認して」と依頼します。新しい環境では初回に実行基盤を自動で準備します。</p></div></section>
+</div>
+<h2>接続前に知っておくこと</h2>
+<details><summary>他の人と環境は共有されますか？</summary><p>ログインした本人が所有するワークスペースに接続します。他人のファイル・認証情報・実行履歴は共有しません。GitHubなど外部サービスへのログインも各自で行ってください。</p></details>
+<details><summary>環境が複数ある場合は？</summary><p>管理者が指定した環境、次に「lkjyolo」という名前の環境を選びます。どちらもなく複数ある場合は実行せず、実行先の指定を案内します。</p></details>
+<details><summary>長い処理や、環境の停止は？</summary><p>チャットの呼び出しが終わっても処理は続けられます。ワークスペースの停止・再起動では実行中の処理は終了します。永続ディスク上のファイルと保存済み履歴は残ります。</p></details>
+<details><summary>プラグインZIPから導入したい</summary><p>ローカルプラグインに対応したCodexなどでは、<a href="/lkjyolo/releases/0.4.0/lkjyolo-0.6.0-portable.zip">配布用ZIP（0.6.0）</a>を利用できます。各自のOAuth接続が必要です。公開ディレクトリへの掲載とは別の配布方法です。</p></details>
+<footer><a href="/lkjyolo/getting-started.md">詳しい使い方・トラブル対処</a><a href="/lkjyolo/releases/0.4.0/SHA256SUMS">配布ファイルのチェックサム</a><p style="margin-top:14px">lkjyolo · 運営 lkjsxc · OpenAIまたはCoderの公式サービスではありません。</p></footer>
+</main></html>
