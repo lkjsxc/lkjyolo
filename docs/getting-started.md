@@ -74,3 +74,8 @@ target/release/lkjyolo package-plugin --portable \
 
 このZIPには作成者個人のApp IDを含みません。各利用者が自分でOAuth接続します。
 配布用ZIPの作成は、OpenAIの公開ディレクトリへの審査・掲載を意味しません。
+
+## 案内URL
+
+案内ページは [lkjyolo.lkjsxc.com](https://lkjyolo.lkjsxc.com/) です。旧案内URLは新URLに転送します。
+OAuthとMCP接続先は引き続き `https://coder.lkjsxc.com/lkjyolo/mcp` を使うため、既存の接続は再設定不要です。
