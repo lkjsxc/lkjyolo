@@ -17,7 +17,7 @@
     "shortDescription": "いつもの開発依頼を永続 Linux 環境で実行"
   },
   "name": "lkjyolo",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Implement features, fix bugs, inspect repositories, build, and test in the user's persistent Linux development environment lkjyolo. Use for development work when no other execution environment is specified.",
   "author": {
     "name": "lkjsxc",

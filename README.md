@@ -23,6 +23,13 @@ ChatGPT / Codex
 - `sudo -n`、Docker、既存の `gh` ログインなど、ワークスペース利用者に与えられた権限を利用する。
 - 同じ Coder OAuth を使う専用 HTTPS エンドポイントを提供し、モデルには開発用の 5 ツールだけを見せる。
 
+## 他の人に使ってもらう
+
+[利用開始ガイド](docs/getting-started.md)にアカウント申請、各自の環境作成、OAuth接続をまとめています。
+0.4.0のgatewayは認証ユーザーごとに所有ワークスペースを選び、実行前に所有者IDを検証します。
+配布用ZIPは `target/release/lkjyolo package-plugin --portable` で作成でき、個人用App IDを含みません。
+同じオプションに `--endpoint https://your-coder.example/lkjyolo/mcp` を付けると別の配備先に対応します。
+
 ## インストール
 
 Linux x86_64。ソースビルドには Rust 1.88 以降と C コンパイラーが必要です。

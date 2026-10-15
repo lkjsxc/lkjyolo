@@ -545,3 +545,68 @@ fn malformed_exit_codes_do_not_create_or_replace_terminal_observations() {
         }
     }
 }
+
+#[test]
+fn portable_plugin_removes_private_bindings_and_preserves_skills() {
+    let tmp = tempdir().unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/lkjyolo");
+    let result = lkjyolo::package::plugin_zip_options(
+        &source,
+        tmp.path(),
+        true,
+        Some("https://coder.example.com/lkjyolo/mcp"),
+    )
+    .unwrap();
+    let mut zip =
+        zip::ZipArchive::new(fs::File::open(result["archive"].as_str().unwrap()).unwrap()).unwrap();
+    assert!(zip.by_name("lkjyolo/.app.json").is_err());
+    for name in ["plugin.json", ".codex-plugin/plugin.json"] {
+        let mut text = String::new();
+        zip.by_name(&format!("lkjyolo/{name}"))
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert!(value.get("apps").is_none());
+        assert!(value.pointer("/extensions/com.openai/apps").is_none());
+        assert!(!text.contains("asdk_app_"));
+    }
+    for name in ["mcp.json", ".mcp.json"] {
+        let mut text = String::new();
+        zip.by_name(&format!("lkjyolo/{name}"))
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap()["mcpServers"]["lkjyolo"]["url"],
+            "https://coder.example.com/lkjyolo/mcp"
+        );
+    }
+    let mut skill = String::new();
+    zip.by_name("lkjyolo/skills/manage-coder/SKILL.md")
+        .unwrap()
+        .read_to_string(&mut skill)
+        .unwrap();
+    assert_eq!(
+        skill,
+        fs::read_to_string(source.join("skills/manage-coder/SKILL.md")).unwrap()
+    );
+    assert!(
+        lkjyolo::package::plugin_zip_options(
+            &source,
+            tmp.path(),
+            true,
+            Some("https://secret@coder.example.com/mcp")
+        )
+        .is_err()
+    );
+    assert!(
+        lkjyolo::package::plugin_zip_options(
+            &source,
+            tmp.path(),
+            false,
+            Some("https://coder.example.com/mcp")
+        )
+        .is_err()
+    );
+}

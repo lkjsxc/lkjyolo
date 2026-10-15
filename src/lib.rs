@@ -1,3 +1,4 @@
+pub mod bootstrap;
 pub mod cli;
 pub mod diagnostics;
 pub mod engine;
@@ -6,6 +7,7 @@ pub mod gateway;
 pub mod journal;
 pub mod mcp;
 pub mod package;
+pub mod routing;
 pub mod runtime;
 pub mod sessions;
 pub mod util;

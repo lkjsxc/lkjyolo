@@ -31,3 +31,4 @@ jobs:
         run: |
           cargo build --locked --release
           target/release/lkjyolo package-plugin
+          target/release/lkjyolo package-plugin --portable
