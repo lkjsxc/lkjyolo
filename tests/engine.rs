@@ -28,7 +28,7 @@ impl Fixture {
             dir: tempfile::Builder::new()
                 .prefix("lkjyolo-rust-test-")
                 .permissions(fs::Permissions::from_mode(0o700))
-                .tempdir_in("/tmp")
+                .tempdir()
                 .unwrap(),
             engine,
         };
@@ -39,6 +39,12 @@ impl Fixture {
             "--workspace",
             value.path().to_str().unwrap(),
         ]);
+        // Interactive shells must keep history/config writes in this fixture.
+        let settings_path = value.path().join("settings.json");
+        let mut settings: Value =
+            serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+        settings["environment"]["HOME"] = json!(value.path());
+        fs::write(settings_path, settings.to_string()).unwrap();
         value
     }
     fn path(&self) -> &Path {
@@ -46,11 +52,15 @@ impl Fixture {
     }
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_lkjyolo"));
-        command
-            .arg("--state")
-            .arg(self.path())
-            .args(args)
-            .current_dir("/tmp");
+        command.arg("--state").arg(self.path());
+        // This opt-in suite exercises the retained terminal engine. Native
+        // pipe execution is covered without ignores in native_http and pipes.
+        if args.first() == Some(&"exec") && !args.contains(&"--tty") {
+            command.arg("exec").arg("--tty").args(&args[1..]);
+        } else {
+            command.args(args);
+        }
+        command.current_dir("/tmp");
         command
     }
     fn execute(&self, args: &[&str], success: bool) -> Value {
@@ -380,7 +390,7 @@ fn direct_mcp_exec_file_edit_replay_and_recovery() {
         wait
     };
     assert_eq!(wait["exit_code"], 0, "{wait}");
-    assert!(wait["output"].as_str().unwrap().contains("DONE"));
+    assert!(wait["stdout"].as_str().unwrap().contains("DONE"));
     let recent = invoke("get_result", json!({}));
     assert!(
         recent["requests"]
@@ -407,7 +417,7 @@ fn command_exit_environment_and_arbitrary_workdir() {
         result["output"]
             .as_str()
             .unwrap()
-            .contains(&std::env::var("HOME").unwrap())
+            .contains(f.path().to_str().unwrap())
     );
 }
 
@@ -507,6 +517,11 @@ fn background_wait_and_history() {
     assert_eq!(end["exit_code"], 0);
     assert_eq!(end["output"], "FINISHED");
     assert_eq!(f.run(&["sessions"])["sessions"][0]["status"], "exited");
+    // list_sessions must let a client rediscover the job by its command.
+    assert_eq!(
+        f.run(&["sessions"])["sessions"][0]["cmd"],
+        "sleep .3; printf FINISHED"
+    );
     let recent = f.run(&["requests"]);
     assert_eq!(recent["requests"].as_array().unwrap().len(), 2);
     assert!(!recent.to_string().contains("cmd"));
@@ -543,7 +558,8 @@ fn long_output_is_recovered_exactly_without_python() {
         "--limit",
         "200000",
     ]);
-    assert_eq!(log["text"], format!("{}\n", "0123456789".repeat(10000)));
+    // This suite explicitly selects a PTY, whose output processing adds CRLF.
+    assert_eq!(log["text"], format!("{}\r\n", "0123456789".repeat(10000)));
     assert_eq!(log["eof"], true);
 }
 
@@ -640,7 +656,7 @@ fn native_worker_launches_through_symlink_without_python_on_path() {
         String::from_utf8_lossy(&output.stdout)
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["result"]["structuredContent"]["output"], "NATIVE");
+    assert_eq!(value["result"]["structuredContent"]["stdout"], "NATIVE");
 }
 
 #[test]

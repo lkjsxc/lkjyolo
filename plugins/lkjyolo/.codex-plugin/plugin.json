@@ -13,12 +13,12 @@
     ],
     "developerName": "lkjsxc",
     "displayName": "lkjyolo",
-    "longDescription": "実装・バグ修正・調査・ビルド・テストを、既定の永続 Linux 開発環境で自律的に進めます。Rust 製 MCP の 5 ツールから直接実行し、sudo・Docker・GitHub CLI・対話シェル・長時間処理・ファイル編集・再接続後の結果回収を扱います。Coder の管理ツールやワークスペース指定は通常の作業に不要です。",
+    "longDescription": "実装・バグ修正・調査・ビルド・テストを、シェルを持たないクライアント向けに、永続 Linux 開発環境で自律的に進めます。Rust 製 MCP の 6 ツールから直接実行し、sudo・Docker・GitHub CLI・対話シェル・長時間処理・ファイル編集・再接続後の結果回収を扱います。Coder の管理ツールやワークスペース指定は通常の作業に不要です。 通常コマンドは stdout・stderr・終了コード・シグナルを分離して返し、省略ログを個別に回収できます。対話端末の出力は結合されます。",
     "shortDescription": "いつもの開発依頼を永続 Linux 環境で実行"
   },
   "name": "lkjyolo",
-  "version": "0.6.0",
-  "description": "Implement features, fix bugs, inspect repositories, build, and test in the user's persistent Linux development environment lkjyolo. Use for development work when no other execution environment is specified.",
+  "version": "0.6.1",
+  "description": "Run commands with separate stdout/stderr and real exit status, and edit files in the user's remote persistent Linux workspace (lkjyolo) from a client that has no shell of its own. Not for agents already running inside that workspace, such as Codex.",
   "author": {
     "name": "lkjsxc",
     "email": "lkjsxc@gmail.com"

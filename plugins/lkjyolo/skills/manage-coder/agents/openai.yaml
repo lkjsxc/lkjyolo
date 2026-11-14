@@ -1,10 +1,10 @@
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: true  # description limits this to clients without a local shell
 
 dependencies:
   tools:
     - type: "mcp"
       value: "lkjyolo"
-      description: "lkjyolo: edit code, build, test, and run commands in the persistent Linux development environment"
+      description: "lkjyolo: remote shell and file tools for the persistent Linux workspace; for clients without a local shell"
       transport: "streamable_http"
       url: "https://coder.lkjsxc.com/lkjyolo/mcp"

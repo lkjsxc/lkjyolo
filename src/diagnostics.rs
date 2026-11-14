@@ -46,6 +46,10 @@ fn classify(status: &str, raw: Option<&str>, oversized: bool) -> Value {
     let result = parsed.and_then(Result::ok).unwrap_or(Value::Null);
     let body = result_body(&result);
     let exit = body.get("exit_code").and_then(Value::as_i64);
+    let signal = body
+        .get("signal")
+        .and_then(Value::as_i64)
+        .filter(|n| (1..=64).contains(n));
     let outcome = match status {
         "queued" => "recorded_queued",
         "running" => "recorded_running_liveness_unverified",
@@ -53,6 +57,8 @@ fn classify(status: &str, raw: Option<&str>, oversized: bool) -> Value {
         "error" => "recorded_error",
         "done" if result_state != "parsed" => "saved_result_unavailable",
         "done" if result["isError"] == true || body["isError"] == true => "saved_tool_error",
+        "done" if body["capture_status"] == "supervisor_lost" => "execution_uncertain",
+        "done" if signal.is_some() => "command_signalled",
         "done" if exit == Some(0) => "command_exited_zero",
         "done" if exit.is_some() => "command_exited_nonzero",
         "done" if body["session_id"].is_string() => "continuation_returned_liveness_unverified",
@@ -63,6 +69,9 @@ fn classify(status: &str, raw: Option<&str>, oversized: bool) -> Value {
     let mut value = json!({"outcome":outcome,"saved_result":result_state});
     if outcome == "command_exited_zero" || outcome == "command_exited_nonzero" {
         value["exit_code"] = json!(exit);
+    }
+    if outcome == "command_signalled" {
+        value["signal"] = json!(signal);
     }
     value
 }
@@ -101,7 +110,8 @@ pub fn inspect(state: &Path, request_id: Option<&str>, limit: usize) -> Result<V
             "done means a saved response, not necessarily command success.",
             "Session and running records do not prove current process liveness.",
             "This sample excludes calls absent from this journal, including pre-journal failures and read-only tools.",
-            "Counts are receipt outcomes, not a safety-block rate or a unique-command success rate."
+            "Counts are receipt outcomes, not a safety-block rate or a unique-command success rate.",
+            "receipt_latency_seconds is created-to-last-update of finished receipts, so long commands count their full run time."
         ]
     });
     let path = state.join("requests.sqlite3");
@@ -155,6 +165,7 @@ pub fn inspect(state: &Path, request_id: Option<&str>, limit: usize) -> Result<V
         let mut outcomes = BTreeMap::<String, usize>::new();
         let mut tools = BTreeMap::<String, usize>::new();
         let mut statuses = BTreeMap::<String, usize>::new();
+        let mut durations = BTreeMap::<String, Vec<f64>>::new();
         let mut sampled = 0;
         let mut more = false;
         while let Some(row) = rows.next().map_err(|_| anyhow!("journal_read_failed"))? {
@@ -172,11 +183,31 @@ pub fn inspect(state: &Path, request_id: Option<&str>, limit: usize) -> Result<V
                     .entry(record[key].as_str().unwrap().to_owned())
                     .or_default() += 1;
             }
+            if matches!(record["status"].as_str(), Some("done" | "error")) {
+                let span = record["updated_at"].as_f64().unwrap_or(0.0)
+                    - record["created_at"].as_f64().unwrap_or(0.0);
+                durations
+                    .entry(record["tool"].as_str().unwrap().to_owned())
+                    .or_default()
+                    .push(span.max(0.0));
+            }
             sampled += 1;
         }
+        let latency: BTreeMap<_, _> = durations
+            .into_iter()
+            .map(|(tool, mut v)| {
+                v.sort_by(f64::total_cmp);
+                let at = |q: f64| v[(((v.len() - 1) as f64) * q).round() as usize];
+                (
+                    tool,
+                    json!({"count":v.len(),"p50":at(0.5),"p95":at(0.95),"max":v[v.len()-1]}),
+                )
+            })
+            .collect();
         report["sample"] = json!({
             "order":"created_desc_id_desc","limit":limit,"sampled":sampled,
-            "more_available":more,"outcomes":outcomes,"tools":tools,"statuses":statuses
+            "more_available":more,"outcomes":outcomes,"tools":tools,"statuses":statuses,
+            "receipt_latency_seconds":latency
         });
     }
     transaction

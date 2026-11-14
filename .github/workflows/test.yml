@@ -3,6 +3,18 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  portable:
+    runs-on: macos-latest
+    env:
+      RUST_TEST_THREADS: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+      - name: Run portable tests without Linux process supervision
+        run: cargo test --locked --all-targets -j 4
   integration:
     runs-on: ubuntu-latest
     steps:

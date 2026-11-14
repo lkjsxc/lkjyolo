@@ -63,12 +63,15 @@ pub fn run_worker(state: &Path, id: &str) -> Result<()> {
     enum Response {
         Direct(Value),
         Session(crate::sessions::Delivery),
+        Native,
     }
     validate_id(id)?;
-    let journal = Journal::new(state)?;
     let locks = state.join("request-locks");
     private_dir(&locks)?;
-    let _lock = lock(&locks.join(format!("{id}.lock")))?;
+    let Some(_lock) = try_lock(&locks.join(format!("{id}.lock")))? else {
+        return Ok(());
+    };
+    let journal = Journal::new(state)?;
     let row = journal.reconcile(journal.get(id)?)?;
     if row.status != "queued" {
         return Ok(());
@@ -80,6 +83,10 @@ pub fn run_worker(state: &Path, id: &str) -> Result<()> {
         if row.tool == "apply_patch" {
             return crate::files::apply(state, &arguments, &mut dispatched)
                 .map(|body| Response::Direct(json!({"structuredContent":body,"isError":false})));
+        }
+        if crate::pipes::handles(&row.tool, &arguments) {
+            crate::pipes::run(state, &journal, &row, &arguments, &mut dispatched)?;
+            return Ok(Response::Native);
         }
         let engine = Engine::new(state)?;
         let identity = engine.ensure()?;
@@ -100,8 +107,30 @@ pub fn run_worker(state: &Path, id: &str) -> Result<()> {
         .map(Response::Session)
     })();
     match outcome {
+        Ok(Response::Native) => Ok(()),
         Ok(Response::Direct(value)) => journal.finish(id, if value["isError"] == true { "error" } else { "done" }, &value),
-        Ok(Response::Session(delivery)) => delivery.commit(&journal, id),
+        Ok(Response::Session(mut delivery)) => {
+            if delivery.value["isError"] != true {
+                let mut body = result_body(&delivery.value);
+                body["stream_mode"] = json!("engine_merged");
+                body["stdout"] = Value::Null;
+                body["stderr"] = Value::Null;
+                body["signal"] = Value::Null;
+                body["duration_ms"] = Value::Null;
+                body["truncated"] = json!(body["output_truncated"] == true);
+                let args: Value = serde_json::from_str(&row.arguments)?;
+                if let Some(cmd) = args["cmd"].as_str() {
+                    let notes = crate::mcp::advisories(cmd);
+                    if !notes.is_empty() { body["warnings"] = json!(notes); }
+                }
+                delivery.value["structuredContent"] = body.clone();
+                delivery.value["content"] = json!([{"type":"text","text":body.to_string()}]);
+            }
+            delivery.commit(&journal, id)
+        },
+        // A native supervisor can fail after its initial response was saved.
+        // Never overwrite that first response (request_id replay contract).
+        Err(error) if journal.get(id)?.status == "done" => Err(error),
         Err(error) => journal.finish(id, if dispatched { "unknown" } else { "error" }, &json!({
             "isError":true,"error":format!("{error:#}"),"execution_may_have_started":dispatched,
             "retry":if dispatched {"Inspect this receipt and side effects; never repeat an uncertain mutation with a new ID."}
@@ -159,6 +188,9 @@ pub fn sessions(state: &Path) -> Result<Value> {
         let Some(sid) = body["session_id"].as_str().or(args["session_id"].as_str()) else {
             continue;
         };
+        if sid.starts_with("pipe-") {
+            continue;
+        }
         // A failed stale-session operation belongs to its original generation.
         // Do not invent a current-generation session from an error receipt.
         if !body["session_id"].is_string()
@@ -170,6 +202,15 @@ pub fn sessions(state: &Path) -> Result<Value> {
         let item = sessions
             .entry((row.generation.clone(), sid.into()))
             .or_insert_with(|| json!({"session_id":sid,"generation":row.generation}));
+        if row.tool == "exec_command" && body["session_id"].is_string() {
+            item["started_request_id"] = json!(row.id);
+            if let Some(cmd) = args["cmd"].as_str() {
+                item["cmd"] = json!(cmd.chars().take(200).collect::<String>());
+            }
+            if let Some(dir) = args["workdir"].as_str() {
+                item["workdir"] = json!(dir);
+            }
+        }
         item["last_request_id"] = json!(row.id);
         item["last_seen_at"] = json!(row.updated);
         if let Some(exit_code) = exit_code {
@@ -193,10 +234,10 @@ pub fn sessions(state: &Path) -> Result<Value> {
             item["status"] = json!("engine_restarted_or_stopped");
         }
     }
-    Ok(
-        json!({"sessions":sessions.into_values().collect::<Vec<_>>(),
-        "note":"Observations, not a process liveness guarantee; poll or wait a current-generation session to refresh."}),
-    )
+    let mut items = sessions.into_values().collect::<Vec<_>>();
+    items.extend(crate::pipes::sessions(&journal)?);
+    Ok(json!({"sessions":items,
+        "note":"Observations, not a process liveness guarantee; poll or wait a current-generation session to refresh."}))
 }
 
 pub fn read_log(state: &Path, path: &Path, offset: u64, limit: u64) -> Result<Value> {
@@ -267,6 +308,6 @@ pub fn doctor(state: &Path) -> Result<Value> {
         "engine_ready":engine.ready(),"daemon":engine.identity(),"sudo_without_password":sudo_ok,"tools":tools,
         "transport":"owner-only Unix socket; authenticated Coder MCP is the remote entrypoint",
         "permissions":"No command allowlist, path sandbox, approval prompt or execution deadline added by lkjyolo",
-        "persistence":"Requests/logs survive reconnection; processes survive client disconnects, not engine/workspace restart"}),
+        "persistence":"Requests/logs survive reconnection; processes survive client disconnects. Workspace restart loses processes; engine restart loses only engine sessions; native supervisor loss has an unknown outcome"}),
     )
 }
