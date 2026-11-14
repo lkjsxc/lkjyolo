@@ -214,3 +214,20 @@ fn config_json_decodes_coder_backend() {
     let config:Config=serde_json::from_value(json!({"listen":"127.0.0.1:8787","public_origin":"https://coder.example.com","backend":"coder","owner_id":"owner-id","workspace":"owner/workspace"})).unwrap();
     assert!(Server::new(config).is_ok());
 }
+
+#[tokio::test]
+async fn missing_accept_header_explains_itself_instead_of_an_empty_406() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = gateway::router(server(&dir));
+    let mut req = request(rpc("ping", json!({})), Some(TOKEN));
+    req.headers_mut().remove("accept");
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+    let body = decode(response).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("text/event-stream")
+    );
+}

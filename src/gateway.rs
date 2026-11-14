@@ -566,12 +566,22 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
     if !header_str(&headers, "content-type")
         .is_some_and(|s| s.split(';').next() == Some("application/json"))
     {
-        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+        return error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Value::Null,
+            -32600,
+            "Content-Type must be application/json",
+        );
     }
     if !header_str(&headers, "accept")
         .is_some_and(|s| s.contains("application/json") && s.contains("text/event-stream"))
     {
-        return StatusCode::NOT_ACCEPTABLE.into_response();
+        return error(
+            StatusCode::NOT_ACCEPTABLE,
+            Value::Null,
+            -32600,
+            "Accept must list both application/json and text/event-stream",
+        );
     }
     let bytes = match tokio::time::timeout(Duration::from_secs(15), to_bytes(body, MAX_BODY)).await
     {
