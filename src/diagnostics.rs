@@ -101,7 +101,8 @@ pub fn inspect(state: &Path, request_id: Option<&str>, limit: usize) -> Result<V
             "done means a saved response, not necessarily command success.",
             "Session and running records do not prove current process liveness.",
             "This sample excludes calls absent from this journal, including pre-journal failures and read-only tools.",
-            "Counts are receipt outcomes, not a safety-block rate or a unique-command success rate."
+            "Counts are receipt outcomes, not a safety-block rate or a unique-command success rate.",
+            "receipt_latency_seconds is created-to-last-update of finished receipts, so long commands count their full run time."
         ]
     });
     let path = state.join("requests.sqlite3");
@@ -155,6 +156,7 @@ pub fn inspect(state: &Path, request_id: Option<&str>, limit: usize) -> Result<V
         let mut outcomes = BTreeMap::<String, usize>::new();
         let mut tools = BTreeMap::<String, usize>::new();
         let mut statuses = BTreeMap::<String, usize>::new();
+        let mut durations = BTreeMap::<String, Vec<f64>>::new();
         let mut sampled = 0;
         let mut more = false;
         while let Some(row) = rows.next().map_err(|_| anyhow!("journal_read_failed"))? {
@@ -172,11 +174,31 @@ pub fn inspect(state: &Path, request_id: Option<&str>, limit: usize) -> Result<V
                     .entry(record[key].as_str().unwrap().to_owned())
                     .or_default() += 1;
             }
+            if matches!(record["status"].as_str(), Some("done" | "error")) {
+                let span = record["updated_at"].as_f64().unwrap_or(0.0)
+                    - record["created_at"].as_f64().unwrap_or(0.0);
+                durations
+                    .entry(record["tool"].as_str().unwrap().to_owned())
+                    .or_default()
+                    .push(span.max(0.0));
+            }
             sampled += 1;
         }
+        let latency: BTreeMap<_, _> = durations
+            .into_iter()
+            .map(|(tool, mut v)| {
+                v.sort_by(f64::total_cmp);
+                let at = |q: f64| v[(((v.len() - 1) as f64) * q).round() as usize];
+                (
+                    tool,
+                    json!({"count":v.len(),"p50":at(0.5),"p95":at(0.95),"max":v[v.len()-1]}),
+                )
+            })
+            .collect();
         report["sample"] = json!({
             "order":"created_desc_id_desc","limit":limit,"sampled":sampled,
-            "more_available":more,"outcomes":outcomes,"tools":tools,"statuses":statuses
+            "more_available":more,"outcomes":outcomes,"tools":tools,"statuses":statuses,
+            "receipt_latency_seconds":latency
         });
     }
     transaction
