@@ -46,6 +46,10 @@ fn classify(status: &str, raw: Option<&str>, oversized: bool) -> Value {
     let result = parsed.and_then(Result::ok).unwrap_or(Value::Null);
     let body = result_body(&result);
     let exit = body.get("exit_code").and_then(Value::as_i64);
+    let signal = body
+        .get("signal")
+        .and_then(Value::as_i64)
+        .filter(|n| (1..=64).contains(n));
     let outcome = match status {
         "queued" => "recorded_queued",
         "running" => "recorded_running_liveness_unverified",
@@ -53,6 +57,8 @@ fn classify(status: &str, raw: Option<&str>, oversized: bool) -> Value {
         "error" => "recorded_error",
         "done" if result_state != "parsed" => "saved_result_unavailable",
         "done" if result["isError"] == true || body["isError"] == true => "saved_tool_error",
+        "done" if body["capture_status"] == "supervisor_lost" => "execution_uncertain",
+        "done" if signal.is_some() => "command_signalled",
         "done" if exit == Some(0) => "command_exited_zero",
         "done" if exit.is_some() => "command_exited_nonzero",
         "done" if body["session_id"].is_string() => "continuation_returned_liveness_unverified",
@@ -63,6 +69,9 @@ fn classify(status: &str, raw: Option<&str>, oversized: bool) -> Value {
     let mut value = json!({"outcome":outcome,"saved_result":result_state});
     if outcome == "command_exited_zero" || outcome == "command_exited_nonzero" {
         value["exit_code"] = json!(exit);
+    }
+    if outcome == "command_signalled" {
+        value["signal"] = json!(signal);
     }
     value
 }

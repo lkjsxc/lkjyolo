@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 pub const VERSIONS: &[&str] = &["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
-pub const INSTRUCTIONS: &str = "lkjyolo is a remote shell and file API for one persistent Linux workspace, meant for clients that have no shell of their own. An agent that already runs inside this workspace (for example Codex) has no need for it. Commands run as the workspace user with its OS permissions, sudo, Docker, network and existing GitHub login; the server adds no allowlist or approval prompt. Before editing a repository, check its git status and AGENTS.md. Do not restart or reconfigure running services, and do not print or copy credential files, unless the user asked for that. request_id is optional and server-assigned when omitted; it is returned in every result. After a disconnect call get_result with the ID (or resend the same ID and arguments); never repeat an unknown mutation under a new ID. Result fields: status=done means a response was saved, so check exit_code for success; a session_id means the process is still running (continue with write_stdin; list_sessions finds a forgotten one); queued/running means poll get_result; output_ref.path is a saved log to read with read_file ranges. Processes survive disconnects but not workspace or engine restarts. Explanation-only requests need no execution.";
+pub const INSTRUCTIONS: &str = "lkjyolo is a remote shell and file API for one persistent Linux workspace, meant for clients that have no shell of their own. An agent that already runs inside this workspace (for example Codex) has no need for it. Commands run as the workspace user with its OS permissions, sudo, Docker, network and existing GitHub login; the server adds no allowlist or approval prompt. Before editing a repository, check its git status and AGENTS.md. Do not restart or reconfigure running services, and do not print or copy credential files, unless the user asked for that. request_id is optional and server-assigned when omitted; it is returned in every result. After a disconnect call get_result with the ID (or resend the same ID and arguments); never repeat an unknown mutation under a new ID. Result fields: status=done means a response was saved, so check exit_code for success; a session_id means the process is still running (continue with write_stdin; list_sessions finds a forgotten one); queued/running means poll get_result; Default commands return separate stdout/stderr, exit_code (null on signal), signal, duration_ms, truncated flags and stdout_ref/stderr_ref byte ranges for read_file; cross-stream interleaving order is not guaranteed. tty=true uses merged terminal output in output/output_ref instead; its signal and total duration are unavailable (null). Processes survive disconnects. Workspace/container restarts lose processes; an external engine restart loses only terminal sessions. Native supervisor loss is an unknown outcome and may leave children alive. Explanation-only requests need no execution.";
 
 fn string(description: &str) -> Value {
     json!({"type":"string","description":description})
@@ -30,14 +30,14 @@ pub fn tools() -> Value {
     json!([
         tool(
             "exec_command",
-            "Run a shell command (/bin/bash -c, non-login) in the persistent Linux workspace. Waits up to yield_time_ms; if the command is still running it returns a session_id and keeps running after disconnect, so continue with write_stdin. Output is truncated to max_output_tokens with an output_ref.path to read the rest. Check exit_code, not status. Example: {\"cmd\":\"cargo test -j 4\",\"workdir\":\"/home/coder/workspace/app\"}. Each call is a fresh shell: cd and exports do not carry over unless you start /bin/bash with tty=true. Not idempotent: without a request_id a replay runs the command again; pass a stable request_id and a retry returns the first execution's saved result instead of running again.",
-            json!({"request_id":id,"cmd":string("Shell command. Use /bin/bash with tty=true for a persistent interactive shell."),"workdir":string("Absolute working directory. Default: configured workspace root."),"tty":{"type":"boolean","default":false},"yield_time_ms":integer(1000,10,10000),"max_output_tokens":integer(4096,1,32768)}),
+            "Run /bin/bash -c (non-login) in a fresh shell. Default tty=false uses native pipes with closed stdin: separate stdout and stderr (cross-stream interleaving order is not guaranteed), real exit_code (null on signal), signal, duration_ms, finished, cancelled/timed_out, and truncated/stdout_truncated/stderr_truncated flags. max_output_tokens is an approximate total byte budget (4 bytes/token, half per stream). stdout_ref/stderr_ref give raw log paths, offset after displayed bytes, and end_offset for read_file continuation; polls return newly captured bytes, so read refs for omitted bytes. Capture retains the first 1 MiB per stream; *_capture_truncated reports discarded bytes. Invalid UTF-8 includes *_base64 and *_encoding_loss. Waits up to yield_time_ms, then returns session_id while the durable worker continues; list_sessions rediscovers jobs and write_stdin polls/cancels. Optional timeout_ms terminates the process group. For terminal input, REPLs or persistent shell state use tty=true: the pinned engine returns merged output/output_ref, stream_mode=engine_merged, null stdout/stderr/signal/duration_ms and its shell-style exit_code. PTYs may echo input, add CRLF/ANSI and change buffering. workdir defaults to the configured workspace; cd/exports do not persist across execs. Check finished plus exit_code/signal, not status=done. Without request_id, repeating a call starts a new execution. Pass a stable request_id to return the first saved response without re-execution.",
+            json!({"request_id":id,"cmd":string("Shell command. Use /bin/bash with tty=true for a persistent interactive shell."),"workdir":string("Absolute working directory. Default: configured workspace root."),"tty":{"type":"boolean","default":false,"description":"Use the PTY engine for terminal input; streams are merged."},"timeout_ms":{"type":"integer","minimum":1,"maximum":604800000,"description":"Optional native command deadline, including background descendants; omitted means no deadline. tty=false only."},"yield_time_ms":integer(1000,10,10000),"max_output_tokens":integer(4096,1,32768)}),
             &["cmd"],
             false
         ),
         tool(
             "write_stdin",
-            "Continue a session returned by exec_command: send input, poll for new output with empty chars, wait for exit with wait_seconds 15..35 (empty chars only), or cancel with chars=\\u0003 (Ctrl-C). Every distinct input or poll needs a fresh request_id if you supply one. The final poll returns exit_code; poll finished sessions so they free capacity. Not idempotent: input sent twice is delivered twice; pass a stable request_id and a retry returns the first result instead of sending again.",
+            "Continue a session: poll newly captured stdout/stderr with empty chars, wait with wait_seconds 15..35 (empty chars only), or cancel the command process group with chars=\\u0003 (SIGINT, then SIGKILL after 250 ms if needed). Native pipes have closed stdin; other input requires tty=true and returns merged terminal output. Cross-stream interleaving order is not guaranteed; use stdout_ref/stderr_ref and read_file to recover omitted raw bytes. Every distinct input or poll needs a fresh request_id if you supply one. Native final polls return finished=true, exit_code (null on signal), signal and duration_ms. Native running capacity is freed at exit; engine sessions need a final poll. Not idempotent: input sent twice is delivered twice; pass a stable request_id and a retry returns the first result instead of sending again.",
             json!({"request_id":id,"session_id":string("Session ID returned by exec_command"),"chars":{"type":"string","default":""},"wait_seconds":integer(0,0,35),"max_output_tokens":integer(4096,1,32768)}),
             &["session_id"],
             false
@@ -58,8 +58,8 @@ pub fn tools() -> Value {
         ),
         tool(
             "list_sessions",
-            "List sessions started by exec_command: running ones first, then the most recent finished ones. Each item has session_id, the starting command (truncated), workdir, status (running_at_last_observation, exited with exit_code, engine_restarted_or_stopped, unknown) and last request_id. Bounded: default limit 20; when more_available is true pass next_cursor as cursor for the next page. Use status=running to see only live jobs. Use it to find a background job after losing its session_id, then poll with write_stdin (empty chars) or cancel with chars=\\u0003. Statuses are observations, not liveness guarantees.",
-            json!({"status":{"type":"string","enum":["all","running","exited","lost"],"default":"all","description":"running = running_at_last_observation or unknown; exited = finished with exit_code; lost = engine_restarted_or_stopped"},"limit":integer(20,1,100),"cursor":string("next_cursor from a previous page")}),
+            "List sessions started by exec_command: running ones first, then the most recent finished ones. Each item has session_id, the starting command (truncated), workdir, status (running_at_last_observation, exited with exit_code or signal, engine_restarted_or_stopped, unknown) and last request_id. Bounded: default limit 20; when more_available is true pass next_cursor as cursor for the next page. Use status=running to see only live jobs. Use it to find a background job after losing its session_id, then poll with write_stdin (empty chars) or cancel with chars=\\u0003. Statuses are observations, not liveness guarantees.",
+            json!({"status":{"type":"string","enum":["all","running","exited","lost"],"default":"all","description":"running = running_at_last_observation or unknown; exited = finished with exit_code or signal; lost = engine_restarted_or_stopped"},"limit":integer(20,1,100),"cursor":string("next_cursor from a previous page")}),
             &[],
             true
         ),
@@ -85,6 +85,7 @@ struct ExecArgs {
     yield_time_ms: u64,
     #[serde(default = "tokens")]
     max_output_tokens: u64,
+    timeout_ms: Option<u64>,
 }
 fn yield_ms() -> u64 {
     1000
@@ -206,6 +207,9 @@ pub fn flatten(receipt: Value) -> Value {
             .cloned()
             .unwrap_or_else(|| result["content"].clone());
     }
+    if body["capture_status"] == "supervisor_lost" {
+        body["status"] = json!("unknown");
+    }
     if matches!(receipt["status"].as_str(), Some("queued" | "running")) {
         body["next"] = json!("Call get_result with this request_id.");
     }
@@ -237,6 +241,14 @@ pub fn validate(name: &str, args: &Value) -> Result<()> {
                 (1..=32768).contains(&a.max_output_tokens),
                 "max_output_tokens must be 1..32768"
             );
+            ensure!(
+                a.timeout_ms.is_none_or(|ms| ms > 0 && ms <= 604800000),
+                "timeout_ms must be 1..604800000"
+            );
+            ensure!(
+                !a.tty || a.timeout_ms.is_none(),
+                "timeout_ms is supported only with tty=false"
+            );
             if let Some(path) = a.workdir {
                 ensure!(
                     Path::new(&path).is_absolute(),
@@ -255,7 +267,7 @@ pub fn validate(name: &str, args: &Value) -> Result<()> {
                     && a.session_id
                         .split('-')
                         .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_lowercase())),
-                "Invalid session_id: pass the session_id exactly as exec_command returned it (two lowercase words joined by a hyphen). If the process already finished, call get_result with the original exec_command request_id"
+                "Invalid session_id: pass the session_id exactly as exec_command returned it (two lowercase letter groups joined by a hyphen). If the process already finished, call get_result with the original exec_command request_id"
             );
             ensure!(a.chars.len() <= 512 * 1024, "Input exceeds 512 KiB");
             ensure!(
@@ -366,6 +378,9 @@ pub fn call(state: &Path, name: &str, args: Value) -> Result<Value> {
             let mut body = json!({"cmd":a.cmd,"tty":a.tty,"yield_time_ms":a.yield_time_ms,"max_output_tokens":a.max_output_tokens});
             if let Some(wd) = a.workdir {
                 body["workdir"] = json!(wd);
+            }
+            if let Some(ms) = a.timeout_ms {
+                body["timeout_ms"] = json!(ms);
             }
             let notes = advisories(&a.cmd);
             let mut flat = flatten(runtime::submit(

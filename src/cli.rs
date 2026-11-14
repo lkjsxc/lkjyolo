@@ -24,7 +24,7 @@ pub struct RequestOptions {
     pub request_id: Option<String>,
     #[arg(long, default_value_t=45, value_parser=clap::value_parser!(u64).range(0..=45))]
     pub client_wait: u64,
-    #[arg(long, default_value_t=4000, value_parser=clap::value_parser!(u32).range(1..=262144))]
+    #[arg(long, default_value_t=4000, value_parser=clap::value_parser!(u32).range(1..=32768))]
     pub max_output_tokens: u32,
 }
 
@@ -83,8 +83,11 @@ pub enum Action {
         cwd: Option<String>,
         #[arg(long)]
         tty: bool,
-        #[arg(long, default_value_t=1000, value_parser=clap::value_parser!(u64).range(10..=40000))]
+        #[arg(long, default_value_t=1000, value_parser=clap::value_parser!(u64).range(10..=10000))]
         yield_ms: u64,
+        /// Native command deadline in milliseconds; omitted means no deadline
+        #[arg(long, conflicts_with = "tty", value_parser=clap::value_parser!(u64).range(1..=604800000))]
+        timeout_ms: Option<u64>,
         command: String,
     },
     Start {
@@ -204,21 +207,21 @@ pub fn dispatch(cli: Cli) -> Result<Option<Value>> {
             endpoint,
         } => package::plugin_zip_options(&source, &output, portable, endpoint.as_deref())?,
         Action::Doctor => runtime::doctor(&state)?,
-        Action::Tools => {
-            let engine = engine::Engine::new(&state)?;
-            engine.ensure()?;
-            engine.rpc("tools/list", json!({}), 50)?
-        }
+        Action::Tools => json!({"tools":crate::mcp::tools()}),
         Action::Exec {
             request: options,
             cwd,
             tty,
             yield_ms,
+            timeout_ms,
             command,
         } => {
             let mut value = json!({"cmd":command,"tty":tty,"yield_time_ms":yield_ms});
             if let Some(cwd) = cwd {
                 value["workdir"] = json!(cwd);
+            }
+            if let Some(ms) = timeout_ms {
+                value["timeout_ms"] = json!(ms);
             }
             request(&state, "exec_command", value, &options)?
         }

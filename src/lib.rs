@@ -7,6 +7,7 @@ pub mod gateway;
 pub mod journal;
 pub mod mcp;
 pub mod package;
+pub mod pipes;
 pub mod routing;
 pub mod runtime;
 pub mod sessions;

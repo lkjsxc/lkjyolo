@@ -146,6 +146,28 @@ fn continuation_is_not_claimed_to_be_currently_alive() {
 }
 
 #[test]
+fn native_signals_and_supervisor_loss_are_classified_without_output() {
+    let tmp = tempdir().unwrap();
+    let j = Journal::new(tmp.path()).unwrap();
+    let r = outcome(
+        &j,
+        tmp.path(),
+        "done",
+        json!({"structuredContent":{"finished":true,"exit_code":null,"signal":15,"stderr":"SECRET"}}),
+    );
+    assert_eq!(r["outcome"], "command_signalled");
+    assert_eq!(r["signal"], 15);
+    assert!(!r.to_string().contains("SECRET"));
+    let r = outcome(
+        &j,
+        tmp.path(),
+        "done",
+        json!({"structuredContent":{"session_id":"SECRET","capture_status":"supervisor_lost"}}),
+    );
+    assert_eq!(r["outcome"], "execution_uncertain");
+}
+
+#[test]
 fn sample_is_bounded_and_never_prints_arguments_results_or_ids() {
     let tmp = tempdir().unwrap();
     let j = Journal::new(tmp.path()).unwrap();
