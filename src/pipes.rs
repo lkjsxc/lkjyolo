@@ -159,12 +159,85 @@ fn admit(state: &Path, j: &Journal) -> Result<()> {
 /// command if capture or durable bookkeeping fails after spawn.
 struct Process(Child, bool);
 impl Process {
-    fn group_exists(&self) -> bool {
-        // EPERM also means the group exists. Only ESRCH proves it is gone.
-        (unsafe { libc::kill(-(self.0.id() as i32), 0) == 0 })
-            || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    fn group_running(&self) -> bool {
+        if unsafe { libc::kill(-(self.0.id() as i32), 0) == -1 }
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        {
+            return false;
+        }
+        // kill(0) also succeeds for zombie-only groups. Linux can retain
+        // orphaned zombies indefinitely when a container's PID 1 does not reap.
+        // Inspection failures remain conservative, just as EPERM does above.
+        #[cfg(target_os = "linux")]
+        {
+            group_has_running_members(Path::new("/proc"), self.0.id()).unwrap_or(true)
+        }
+        #[cfg(not(target_os = "linux"))]
+        true
     }
 }
+
+#[cfg(target_os = "linux")]
+fn group_has_running_members(proc: &Path, pgid: u32) -> Result<bool> {
+    let pgid = pgid.to_string();
+    for entry in fs::read_dir(proc)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+            .is_none()
+        {
+            continue;
+        }
+        match group_member_running(&entry.path().join("stat"), &pgid)? {
+            Some(true) => return Ok(true),
+            Some(false) => {
+                // A zombie leader can still have executable threads. /proc
+                // enumerates process leaders, so inspect its remaining tasks.
+                let tasks = match fs::read_dir(entry.path().join("task")) {
+                    Ok(tasks) => tasks,
+                    Err(e) if process_disappeared(&e) => continue,
+                    Err(e) => return Err(e.into()),
+                };
+                for task in tasks {
+                    if group_member_running(&task?.path().join("stat"), &pgid)? == Some(true) {
+                        return Ok(true);
+                    }
+                }
+            }
+            None => (),
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+fn process_disappeared(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ESRCH))
+}
+
+#[cfg(target_os = "linux")]
+fn group_member_running(stat: &Path, pgid: &str) -> Result<Option<bool>> {
+    let raw = match fs::read(stat) {
+        Ok(raw) => raw,
+        // Processes and threads may disappear during inspection.
+        Err(e) if process_disappeared(&e) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    // comm may contain whitespace, ')' and non-UTF-8 bytes. Only the
+    // fields after its final ')' describe the state, parent and group.
+    let raw = String::from_utf8_lossy(&raw);
+    let mut fields = raw
+        .rsplit_once(')')
+        .context("Invalid process stat")?
+        .1
+        .split_whitespace();
+    let state = fields.next().context("Missing process state")?;
+    let group = fields.nth(1).context("Missing process group")?;
+    Ok((group == pgid).then_some(!matches!(state, "Z" | "X")))
+}
+
 impl Drop for Process {
     fn drop(&mut self) {
         if !self.1 {
@@ -334,8 +407,9 @@ pub fn run(
         )?;
         // EOF and shell exit do not cover descendants that redirected their
         // output. An explicit deadline keeps their process group supervised.
-        let group_survives =
-            (timeout_ms.is_some() || interrupted.is_some()) && !kill_sent && child.group_exists();
+        let group_survives = (timeout_ms.is_some() || interrupted.is_some())
+            && !kill_sent
+            && (status.is_none() || child.group_running());
         if (!captured || group_survives)
             && interrupted.is_none()
             && (cancel || timeout_ms.is_some_and(|ms| job.duration_ms >= ms))
@@ -731,6 +805,108 @@ mod tests {
             assert_eq!(body["finished"], true);
             assert_eq!(body["timed_out"], false);
             assert_eq!(body["stdout"], "done");
+        }
+    }
+
+    #[test]
+    fn zombie_leaders_with_live_threads_keep_the_group_supervised() {
+        let proc = tempfile::tempdir().unwrap();
+        let leader = proc.path().join("101");
+        let thread = leader.join("task/102");
+        fs::create_dir_all(&thread).unwrap();
+        // Include a comm that cannot be parsed as whitespace-delimited UTF-8.
+        fs::write(leader.join("stat"), b"101 (worker ) \xff) Z 1 101 0").unwrap();
+        for state in ["R", "S", "D", "T", "Z", "X"] {
+            fs::write(thread.join("stat"), format!("102 (thread) {state} 1 101 0")).unwrap();
+            assert_eq!(
+                group_has_running_members(proc.path(), 101).unwrap(),
+                !matches!(state, "Z" | "X"),
+                "thread state {state}"
+            );
+            assert!(!group_has_running_members(proc.path(), 999).unwrap());
+        }
+        // Exits during enumeration are harmless, but unreadable or malformed
+        // state must reach the caller's conservative liveness fallback.
+        fs::remove_file(thread.join("stat")).unwrap();
+        assert!(!group_has_running_members(proc.path(), 101).unwrap());
+        fs::write(thread.join("stat"), "invalid").unwrap();
+        assert!(group_has_running_members(proc.path(), 101).is_err());
+        assert!(group_has_running_members(&proc.path().join("missing"), 101).is_err());
+    }
+
+    #[test]
+    fn deadline_ignores_zombie_only_process_groups() {
+        const ISOLATED: &str = "LKJYOLO_TEST_ZOMBIE_SUBREAPER";
+        if std::env::var_os(ISOLATED).is_none() {
+            // Isolate adoption from parallel tests, and retain exited orphans
+            // deterministically even on hosts whose PID 1 reaps promptly.
+            let mut test = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "pipes::tests::deadline_ignores_zombie_only_process_groups",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(ISOLATED, "1")
+                .spawn()
+                .unwrap();
+            assert!(wait_child(&mut test, 15).unwrap().success());
+            return;
+        }
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) }, 0);
+
+        struct Reap(Vec<i32>);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                for &pid in &self.0 {
+                    unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+                }
+            }
+        }
+
+        for yield_ms in [10000, 10] {
+            for mixed in [false, true] {
+                let dir = fixture();
+                let cmd = if mixed {
+                    "sleep .05 >/dev/null 2>&1 & echo $! > children; sleep .25 >/dev/null 2>&1 & echo $! >> children; printf done"
+                } else {
+                    "sleep .05 >/dev/null 2>&1 & echo $! > children; printf done"
+                };
+                let (first, j) = execute(
+                    dir.path(),
+                    json!({"cmd":cmd,"timeout_ms":2000,"yield_time_ms":yield_ms}),
+                );
+                let children = Reap(
+                    fs::read_to_string(dir.path().join("children"))
+                        .unwrap()
+                        .split_whitespace()
+                        .map(|pid| pid.parse().unwrap())
+                        .collect(),
+                );
+                // Prove the regression actually retained zombies, rather than
+                // relying only on a fast command or a fortunate host reaper.
+                for pid in &children.0 {
+                    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+                    assert_eq!(
+                        stat.rsplit_once(')').unwrap().1.split_whitespace().next(),
+                        Some("Z")
+                    );
+                }
+                let job = jobs(&j).unwrap().remove(0);
+                let body = snapshot(dir.path(), &job, [0, 0], 100).unwrap();
+                if yield_ms == 10 {
+                    assert_eq!(first["finished"], false);
+                    assert_eq!(first["timed_out"], false);
+                }
+                assert_eq!(body["finished"], true);
+                assert_eq!(body["timed_out"], false);
+                assert_eq!(body["cancelled"], false);
+                assert_eq!(body["exit_code"], 0);
+                assert_eq!(body["signal"], Value::Null);
+                assert_eq!(body["stdout"], "done");
+                assert!(job.duration_ms < 1500, "zombies delayed completion");
+                assert!(job.duration_ms >= if mixed { 200 } else { 40 });
+            }
         }
     }
 
