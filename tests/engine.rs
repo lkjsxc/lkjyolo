@@ -507,6 +507,11 @@ fn background_wait_and_history() {
     assert_eq!(end["exit_code"], 0);
     assert_eq!(end["output"], "FINISHED");
     assert_eq!(f.run(&["sessions"])["sessions"][0]["status"], "exited");
+    // list_sessions must let a client rediscover the job by its command.
+    assert_eq!(
+        f.run(&["sessions"])["sessions"][0]["cmd"],
+        "sleep .3; printf FINISHED"
+    );
     let recent = f.run(&["requests"]);
     assert_eq!(recent["requests"].as_array().unwrap().len(), 2);
     assert!(!recent.to_string().contains("cmd"));

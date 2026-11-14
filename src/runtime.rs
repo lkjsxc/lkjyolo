@@ -170,6 +170,15 @@ pub fn sessions(state: &Path) -> Result<Value> {
         let item = sessions
             .entry((row.generation.clone(), sid.into()))
             .or_insert_with(|| json!({"session_id":sid,"generation":row.generation}));
+        if row.tool == "exec_command" && body["session_id"].is_string() {
+            item["started_request_id"] = json!(row.id);
+            if let Some(cmd) = args["cmd"].as_str() {
+                item["cmd"] = json!(cmd.chars().take(200).collect::<String>());
+            }
+            if let Some(dir) = args["workdir"].as_str() {
+                item["workdir"] = json!(dir);
+            }
+        }
         item["last_request_id"] = json!(row.id);
         item["last_seen_at"] = json!(row.updated);
         if let Some(exit_code) = exit_code {

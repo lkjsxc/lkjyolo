@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 pub const VERSIONS: &[&str] = &["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
-pub const INSTRUCTIONS: &str = "lkjyolo is a remote shell and file API for one persistent Linux workspace, meant for clients that have no shell of their own. An agent that already runs inside this workspace (for example Codex) has no need for it. Commands run as the workspace user with its OS permissions, sudo, Docker, network and existing GitHub login; the server adds no allowlist or approval prompt. Before editing a repository, check its git status and AGENTS.md. Do not restart or reconfigure running services, and do not print or copy credential files, unless the user asked for that. request_id is optional and server-assigned when omitted; it is returned in every result. After a disconnect call get_result with the ID (or resend the same ID and arguments); never repeat an unknown mutation under a new ID. Result fields: status=done means a response was saved, so check exit_code for success; a session_id means the process is still running (continue with write_stdin); queued/running means poll get_result; output_ref.path is a saved log to read with read_file ranges. Processes survive disconnects but not workspace or engine restarts. Explanation-only requests need no execution.";
+pub const INSTRUCTIONS: &str = "lkjyolo is a remote shell and file API for one persistent Linux workspace, meant for clients that have no shell of their own. An agent that already runs inside this workspace (for example Codex) has no need for it. Commands run as the workspace user with its OS permissions, sudo, Docker, network and existing GitHub login; the server adds no allowlist or approval prompt. Before editing a repository, check its git status and AGENTS.md. Do not restart or reconfigure running services, and do not print or copy credential files, unless the user asked for that. request_id is optional and server-assigned when omitted; it is returned in every result. After a disconnect call get_result with the ID (or resend the same ID and arguments); never repeat an unknown mutation under a new ID. Result fields: status=done means a response was saved, so check exit_code for success; a session_id means the process is still running (continue with write_stdin; list_sessions finds a forgotten one); queued/running means poll get_result; output_ref.path is a saved log to read with read_file ranges. Processes survive disconnects but not workspace or engine restarts. Explanation-only requests need no execution.";
 
 fn string(description: &str) -> Value {
     json!({"type":"string","description":description})
@@ -55,6 +55,13 @@ pub fn tools() -> Value {
             json!({"request_id":id,"changes":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"path":string("Absolute file path"),"before_sha256":string("SHA-256 from read_file, or absent"),"content":{"type":["string","null"],"description":"Complete replacement text, or null to delete"}},"required":["path","before_sha256","content"],"additionalProperties":false}}}),
             &["changes"],
             false
+        ),
+        tool(
+            "list_sessions",
+            "List sessions started by exec_command, newest observations included: session_id, the command that started it, workdir, last known status (running_at_last_observation, exited with exit_code, engine_restarted_or_stopped, unknown) and the last request_id. Use it to find a background job again after losing its session_id, then poll it with write_stdin (empty chars) or cancel it with chars=\\u0003. Statuses are observations, not liveness guarantees.",
+            json!({}),
+            &[],
+            true
         ),
         tool(
             "get_result",
@@ -207,6 +214,10 @@ pub fn validate(name: &str, args: &Value) -> Result<()> {
             );
             files::validate_patch(&serde_json::from_value(value)?)?;
         }
+        "list_sessions" => ensure!(
+            args.as_object().is_some_and(|o| o.is_empty()),
+            "list_sessions takes no arguments"
+        ),
         "get_result" => {
             let a: ResultArgs = serde_json::from_value(args.clone())?;
             ensure!((1..=100).contains(&a.limit), "limit must be 1..100");
@@ -215,7 +226,7 @@ pub fn validate(name: &str, args: &Value) -> Result<()> {
             }
         }
         _ => bail!(
-            "Unknown tool: {name}. Available tools: exec_command, write_stdin, read_file, apply_patch, get_result"
+            "Unknown tool: {name}. Available tools: exec_command, write_stdin, list_sessions, read_file, apply_patch, get_result"
         ),
     }
     Ok(())
@@ -300,6 +311,7 @@ pub fn call(state: &Path, name: &str, args: Value) -> Result<Value> {
             let id = body.as_object_mut().unwrap().remove("request_id");
             runtime::submit(state, name, &body, id.as_ref().and_then(Value::as_str), 3)?
         }
+        "list_sessions" => return runtime::sessions(state),
         "read_file" => return files::read(serde_json::from_value(args)?),
         "get_result" => {
             let a: ResultArgs = serde_json::from_value(args)?;

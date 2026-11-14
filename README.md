@@ -6,7 +6,7 @@ CLI・worker・インストーラー・プラグインの ZIP 作成・テスト
 
 ```text
 ChatGPT / Codex
-  └─ lkjyolo MCP: exec_command / write_stdin / read_file / apply_patch / get_result
+  └─ lkjyolo MCP: exec_command / write_stdin / list_sessions / read_file / apply_patch / get_result
        └─ Rust gateway + same-origin Coder OAuth
             └─ Coder (workspace auto-start and transport, hidden from the model)
                  └─ Rust CLI / durable worker / SQLite journal
@@ -21,7 +21,7 @@ ChatGPT / Codex
 - 多量の出力を短く返し、省略されたログをバイト範囲で回収する。
 - コマンド許可リスト、作業ディレクトリによるアクセス制限、追加の承認プロンプトを設けない。
 - `sudo -n`、Docker、既存の `gh` ログインなど、ワークスペース利用者に与えられた権限を利用する。
-- 同じ Coder OAuth を使う専用 HTTPS エンドポイントを提供し、モデルには開発用の 5 ツールだけを見せる。
+- 同じ Coder OAuth を使う専用 HTTPS エンドポイントを提供し、モデルには開発用の 6 ツールだけを見せる。
 
 ## 他の人に使ってもらう
 
@@ -53,15 +53,6 @@ ARM Linux は upstream と lkjyolo をソースビルドし、
 `target/release/lkjyolo setup --engine /path/to/chatgpt-exec-mcp --workspace /path/to/workspace --sha256 <検証した値>`
 で設定できます。このインストール経路は今回の実機検証対象外です。
 
-### Python 版 0.1.0 からの移行
-
-同じ `install` コマンドで `~/.local/bin/lkjyolo` を Rust 版にアトミックに切り替えます。
-SQLite のスキーマ、依頼 ID、CLI 引数、結果 JSON、設定ファイル、PID の識別方式、Unix socket を引き継ぎます。
-既存の実行エンジンは再起動せず、旧版で開始した対話セッションを Rust 版から継続できます。
-Python が保存した JSON の表記差があっても、同じツール・引数の再送は保存済みの結果を返します。
-旧版の zipapp と状態データは削除しません。インストール結果の `previous_target` が切替前の配置先です。
-必要なら、その既知の配置先へ CLI のシンボリックリンクを戻してロールバックできます。
-
 ## ChatGPT からの操作
 
 > 0.4.x 以降の方針: lkjyolo は「自分のシェルを持たないクライアント（ChatGPT のチャット等）向け」です。
@@ -70,7 +61,7 @@ Python が保存した JSON の表記差があっても、同じツール・引�
 > `exec_command` の結果には、サービス操作・本番反映・破壊的 git・秘密情報ファイルらしいコマンドに対して非ブロックの `warnings` を付けます。
 > 旧形式（`request_id` 必須を前提とした説明、「実行環境が未指定なら既定で使う」という自動選択文言）との互換は維持しません。
 
-専用 URL は `https://coder.lkjsxc.com/lkjyolo/mcp`。プラグイン 0.5.1 の内部名・表示名は **lkjyolo**。
+専用 URL は `https://coder.lkjsxc.com/lkjyolo/mcp`。プラグイン 0.6.1 の内部名・表示名は **lkjyolo**。
 シェルを持たないクライアントからの「実装して」「バグを直して」「テストして」のような実行依頼を対象にします。
 ローカルのシェルやチェックアウトを持つエージェントは、それを優先して lkjyolo を使いません。
 説明だけの依頼では実行しません。ホスト側で接続・有効化が必要で、自動選択はモデルの判断です。
@@ -80,7 +71,7 @@ AI 向けのツール説明・スキル手順・選択用の説明は英語に�
 応答にはユーザーの言語を使います。
 
 ChatGPT では専用の **lkjyolo MCP** 接続をプラグインに紐付けます。
-ソースは `plugins/lkjyolo`、配布ZIPは `dist/lkjyolo-0.5.1.zip` です。
+ソースは `plugins/lkjyolo`、配布ZIPは `dist/lkjyolo-0.6.1.zip` です。
 既存の `lkjyolo MCP` 接続と認証を引き継ぎます。旧 `home-coder` は名前の異なるプラグインなので、
 新しいlkjyoloを有効化して5つのツールを確認してから、旧プラグインと旧 **Home Coder MCP** 接続を削除します。
 Coder サーバーとワークスペースは引き続き実行基盤として使用します。
@@ -91,6 +82,7 @@ Coder サーバーとワークスペースは引き続き実行基盤として�
 | `write_stdin` | 入力、出力回収、15〜35 秒の待機、Ctrl-C |
 | `read_file` | ファイル・ディレクトリ・省略ログの読み取り |
 | `apply_patch` | 更新前 SHA-256 を確認した作成・全文置換・削除 |
+| `list_sessions` | 開始済みセッションの一覧（コマンド・作業ディレクトリ・最後に観測した状態）。`session_id` を失った後の再発見用 |
 | `get_result` | 通信断後の結果回収、最近の依頼一覧 |
 
 変更操作とポーリングには一意の `request_id` を付けます。返り値は直接読める JSON で、

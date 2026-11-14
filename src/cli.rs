@@ -37,7 +37,7 @@ pub struct SessionOptions {
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// Serve the five-tool authenticated Streamable HTTP MCP
+    /// Serve the six-tool authenticated Streamable HTTP MCP
     Serve {
         #[arg(long)]
         config: PathBuf,

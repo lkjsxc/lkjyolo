@@ -43,7 +43,7 @@ For a known repository, inspect its Git status and applicable `AGENTS.md` before
 editing. If no repository is identified, use `read_file` on the workspace root
 and ask only for details still needed to identify the target.
 
-## Five direct tools
+## Six direct tools
 
 | Tool | Use |
 | --- | --- |
@@ -51,6 +51,7 @@ and ask only for details still needed to identify the target.
 | `write_stdin` | Send input, collect output, wait for completion, or interrupt a `session_id`. |
 | `read_file` | Read an absolute file, directory, or saved log path, with `offset` and `limit` as needed. File offsets count bytes; directory offsets count entries. |
 | `apply_patch` | Create, replace, or delete text files after verifying their previous SHA-256 hashes. |
+| `list_sessions` | List sessions started by `exec_command` with their command, workdir and last known status; use it to find a background job after losing its `session_id`. |
 | `get_result` | Retrieve a saved receipt by `request_id`, or omit the ID to list recent requests. |
 
 Give each `exec_command`, `write_stdin`, and `apply_patch` operation a unique
