@@ -24,6 +24,7 @@ const STREAM_CAP: u64 = 1024 * 1024;
 const STORE_CAP: u64 = 4 * 1024 * 1024 * 1024;
 const RETENTION: f64 = 7.0 * 86400.0;
 const MAX_RUNNING: usize = 512;
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Job {
@@ -44,6 +45,19 @@ struct Job {
     cancelled: bool,
     timed_out: bool,
     logs_expired: bool,
+}
+
+impl Job {
+    fn progress_changed(&self, saved: &Self) -> bool {
+        self.total != saved.total
+            || self.stored != saved.stored
+            || self.capture_error != saved.capture_error
+            || self.finished != saved.finished
+            || self.exit_code != saved.exit_code
+            || self.signal != saved.signal
+            || self.cancelled != saved.cancelled
+            || self.timed_out != saved.timed_out
+    }
 }
 
 pub fn schema(j: &Journal) -> Result<()> {
@@ -144,6 +158,13 @@ fn admit(state: &Path, j: &Journal) -> Result<()> {
 /// Kill only this worker's own process group on errors; never orphan a running
 /// command if capture or durable bookkeeping fails after spawn.
 struct Process(Child, bool);
+impl Process {
+    fn group_exists(&self) -> bool {
+        // EPERM also means the group exists. Only ESRCH proves it is gone.
+        (unsafe { libc::kill(-(self.0.id() as i32), 0) == 0 })
+            || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+}
 impl Drop for Process {
     fn drop(&mut self) {
         if !self.1 {
@@ -290,7 +311,10 @@ pub fn run(
     let mut open = [true; 2];
     let mut status = None;
     let mut interrupted = None;
+    let mut kill_sent = false;
     let mut receipt_saved = false;
+    let mut saved = job.clone();
+    let mut last_save = Instant::now();
     loop {
         if open[0] {
             open[0] = drain(&mut stdout, &mut files[0], &mut job, 0);
@@ -302,18 +326,13 @@ pub fn run(
             status = child.0.try_wait()?;
         }
         job.duration_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        job.finished = status.is_some() && !open[0] && !open[1];
-        if job.finished {
-            let status = status.unwrap();
-            job.exit_code = status.code();
-            job.signal = status.signal();
-        }
+        let captured = status.is_some() && !open[0] && !open[1];
         let cancel: bool = j.db.query_row(
             "SELECT cancel FROM pipe_sessions WHERE session_id=?",
             [&sid],
             |r| r.get(0),
         )?;
-        if !job.finished
+        if !captured
             && interrupted.is_none()
             && (cancel || timeout_ms.is_some_and(|ms| job.duration_ms >= ms))
         {
@@ -327,14 +346,32 @@ pub fn run(
             }
             interrupted = Some(Instant::now());
         }
-        if !job.finished && interrupted.is_some_and(|at| at.elapsed() >= Duration::from_millis(250))
+        // A shell can exit and close both pipes while a redirected descendant
+        // still ignores TERM/INT. Keep supervising that group through KILL.
+        let group_survives = interrupted.is_some() && !kill_sent && child.group_exists();
+        if group_survives
+            && interrupted.is_some_and(|at| at.elapsed() >= Duration::from_millis(250))
         {
             unsafe {
                 libc::kill(-(child.0.id() as i32), libc::SIGKILL);
             }
+            kill_sent = true;
         }
-        save(j, &job)?;
-        if !receipt_saved && (job.finished || job.duration_ms >= yield_ms) {
+        // KILL may leave adopted zombies until their reaper runs. They cannot
+        // execute, so do not wait for kill(0) to stop reporting those members.
+        job.finished = captured && (!group_survives || kill_sent);
+        if job.finished {
+            let status = status.unwrap();
+            job.exit_code = status.code();
+            job.signal = status.signal();
+        }
+        let receipt_due = !receipt_saved && (job.finished || job.duration_ms >= yield_ms);
+        if job.progress_changed(&saved) || last_save.elapsed() >= PROGRESS_INTERVAL || receipt_due {
+            save(j, &job)?;
+            saved = job.clone();
+            last_save = Instant::now();
+        }
+        if receipt_due {
             deliver(state, j, &row.id, &sid, args, dispatched)?;
             receipt_saved = true;
         }
@@ -498,7 +535,7 @@ pub fn sessions(j: &Journal) -> Result<Vec<Value>> {
     }).collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::engine::Settings;
@@ -611,6 +648,123 @@ mod tests {
         assert_eq!(body["timed_out"], true);
         assert_eq!(body["signal"], libc::SIGKILL);
         assert_eq!(body["exit_code"], Value::Null);
+    }
+
+    #[test]
+    fn timeout_and_cancel_kill_redirected_descendants_after_shell_exit() {
+        for cancel in [false, true] {
+            let dir = fixture();
+            let state = dir.path().to_owned();
+            let handle = std::thread::spawn(move || {
+                execute(
+                    &state,
+                    json!({
+                        "cmd":"bash -c 'trap \"\" TERM INT; echo $$ > child.pid; while :; do sleep 1; done' >/dev/null 2>&1 & wait",
+                        "timeout_ms":if cancel { 10000 } else { 500 },
+                        "yield_time_ms":10
+                    }),
+                )
+            });
+            let j = Journal::new(dir.path()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let sid = loop {
+                if let Ok(row) = j.get("test")
+                    && row.status == "done"
+                    && dir.path().join("child.pid").exists()
+                {
+                    break row.receipt().unwrap()["result"]["structuredContent"]["session_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned();
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            let pid: u32 = fs::read_to_string(dir.path().join("child.pid"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            // Clean up the test's descendant even if this regression returns.
+            struct Cleanup(u32);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    unsafe {
+                        libc::kill(self.0 as i32, libc::SIGKILL);
+                    }
+                }
+            }
+            let _cleanup = Cleanup(pid);
+            assert!(fingerprint(pid).is_some());
+            if cancel {
+                let args = json!({"session_id":sid,"chars":"\u{3}"});
+                j.prepare("cancel", "write_stdin", &args).unwrap();
+                deliver(dir.path(), &j, "cancel", &sid, &args, &mut false).unwrap();
+            }
+            handle.join().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while fingerprint(pid).is_some() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(fingerprint(pid).is_none(), "redirected descendant survived");
+            let job = get(&j, &sid).unwrap();
+            assert!(job.finished);
+            assert_eq!(job.cancelled, cancel);
+            assert_eq!(job.timed_out, !cancel);
+            // The shell died on the first signal; KILL was for its descendant.
+            assert_eq!(
+                job.signal,
+                Some(if cancel { libc::SIGINT } else { libc::SIGTERM })
+            );
+        }
+    }
+
+    #[test]
+    fn idle_progress_is_throttled_but_output_receipts_and_exit_are_saved() {
+        let dir = fixture();
+        let j = Journal::new(dir.path()).unwrap();
+        schema(&j).unwrap();
+        j.db.execute_batch(
+            "CREATE TABLE snapshots(data TEXT NOT NULL);
+             CREATE TRIGGER count_snapshots AFTER UPDATE OF data ON pipe_sessions
+             BEGIN INSERT INTO snapshots(data) VALUES(NEW.data); END;",
+        )
+        .unwrap();
+        let (first, _) = execute(
+            dir.path(),
+            json!({
+                "cmd":"printf early; sleep 2.2; printf late >&2", "yield_time_ms":30
+            }),
+        );
+        assert_eq!(first["stdout"], "early");
+        assert_eq!(first["finished"], false);
+        let snapshots: Vec<Job> =
+            j.db.prepare("SELECT data FROM snapshots")
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|raw| serde_json::from_str(&raw.unwrap()).unwrap())
+                .collect();
+        assert!(
+            (4..=8).contains(&snapshots.len()),
+            "{} writes for idle command",
+            snapshots.len()
+        );
+        assert!(
+            snapshots
+                .iter()
+                .any(|job| !job.finished && job.duration_ms >= 1000)
+        );
+        let last = snapshots.last().unwrap();
+        assert!(last.finished);
+        assert_eq!(last.exit_code, Some(0));
+        assert_eq!(last.stored, [5, 4]);
+        assert_eq!(
+            get(&j, first["session_id"].as_str().unwrap())
+                .unwrap()
+                .stored,
+            [5, 4]
+        );
     }
 
     #[test]

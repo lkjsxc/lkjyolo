@@ -66,10 +66,12 @@ pub fn run_worker(state: &Path, id: &str) -> Result<()> {
         Native,
     }
     validate_id(id)?;
-    let journal = Journal::new(state)?;
     let locks = state.join("request-locks");
     private_dir(&locks)?;
-    let _lock = lock(&locks.join(format!("{id}.lock")))?;
+    let Some(_lock) = try_lock(&locks.join(format!("{id}.lock")))? else {
+        return Ok(());
+    };
+    let journal = Journal::new(state)?;
     let row = journal.reconcile(journal.get(id)?)?;
     if row.status != "queued" {
         return Ok(());

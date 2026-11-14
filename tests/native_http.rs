@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 //! Real HTTP transport, compiled CLI, detached workers, SQLite and native pipes.
-use lkjyolo::{engine::Settings, util};
+use lkjyolo::{engine::Settings, journal::Journal, runtime, util};
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
 use std::{
@@ -17,6 +17,56 @@ struct Server {
     client: Client,
     url: String,
     _dir: tempfile::TempDir,
+}
+
+#[test]
+fn duplicate_workers_exit_while_request_lock_is_held() {
+    let server = Server::new();
+    let state = server._dir.path().join("state");
+    let j = Journal::new(&state).unwrap();
+    let args = json!({
+        "cmd":"printf x >> counter; while [ ! -f release ]; do sleep .02; done",
+        "yield_time_ms":10, "timeout_ms":10000
+    });
+    j.prepare("duplicate-worker", "exec_command", &args)
+        .unwrap();
+    let locks = state.join("request-locks");
+    util::private_dir(&locks).unwrap();
+    let guard = util::lock(&locks.join("duplicate-worker.lock")).unwrap();
+    let worker = || {
+        Command::new(
+            std::env::var_os("LKJYOLO_NATIVE_TEST_BINARY")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_lkjyolo").into()),
+        )
+        .arg("--state")
+        .arg(&state)
+        .arg("_worker")
+        .arg("duplicate-worker")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap()
+    };
+    // Model two submitters that both observed queued, even before the winner
+    // has marked it running. The loser must not queue behind the request lock.
+    let mut duplicate = worker();
+    assert!(util::wait_child(&mut duplicate, 1).unwrap().success());
+    assert_eq!(j.get("duplicate-worker").unwrap().status, "queued");
+    drop(guard);
+
+    let mut owner = worker();
+    let first = runtime::collect(&state, "duplicate-worker", 1).unwrap();
+    assert_eq!(first["status"], "done");
+    assert_eq!(first["result"]["structuredContent"]["finished"], false);
+    assert!(owner.try_wait().unwrap().is_none());
+    let mut duplicate = worker();
+    assert!(util::wait_child(&mut duplicate, 1).unwrap().success());
+    assert!(owner.try_wait().unwrap().is_none());
+    fs::write(server._dir.path().join("release"), "").unwrap();
+    assert!(util::wait_child(&mut owner, 4).unwrap().success());
+    assert_eq!(j.get("duplicate-worker").unwrap().receipt().unwrap(), first);
+    assert_eq!(fs::read(server._dir.path().join("counter")).unwrap(), b"x");
 }
 impl Drop for Server {
     fn drop(&mut self) {

@@ -93,13 +93,28 @@ pub fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
 
 /// Closing the descriptor releases flock, including on early return or panic.
 pub fn lock(path: &Path) -> Result<File> {
+    let file = lock_file(path)?;
+    file.lock_exclusive()?;
+    Ok(file)
+}
+
+/// A competing worker already owns this request; do not wait for its command.
+pub fn try_lock(path: &Path) -> Result<Option<File>> {
+    let file = lock_file(path)?;
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(Some(file)),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn lock_file(path: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .append(true)
         .create(true)
         .mode(0o600)
         .open(path)?;
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.lock_exclusive()?;
     Ok(file)
 }
 

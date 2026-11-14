@@ -80,8 +80,13 @@ the configured explicit environment and workspace, or an absolute `workdir`.
 It drains both nonblocking pipes fairly in a `poll` loop, with bounded buffers.
 SQLite stores supervisor identity, current capture counts and status. After the
 yield deadline it saves the first response and continues supervising the process.
+Output and state changes are saved immediately; idle duration snapshots are saved
+at most once per second, independently of pipe polling. The first response always
+uses a fresh snapshot. Concurrent duplicate workers exit without waiting for the
+owning worker's request lock, including after that first response is saved.
 Thus request status `done` is not command completion. `finished=true` indicates
-that the shell exited and both output pipes reached EOF. Descendants retaining a
+that the shell exited and both output pipes reached EOF; during termination it
+also waits for the command group to disappear or receive KILL. Descendants retaining a
 pipe keep the job discoverable. Processes which deliberately detach from the
 command group and close its pipes are outside this lifecycle.
 
