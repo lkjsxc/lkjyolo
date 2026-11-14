@@ -279,7 +279,7 @@ fn http_redirect_is_not_followed_for_tool_mutations() {
     let tmp = tempfile::Builder::new()
         .prefix("ly-")
         .permissions(fs::Permissions::from_mode(0o700))
-        .tempdir_in("/tmp")
+        .tempdir()
         .unwrap();
     let listener = UnixListener::bind(tmp.path().join("mcp.sock")).unwrap();
     let server = std::thread::spawn(move || {

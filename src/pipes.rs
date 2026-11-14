@@ -3,7 +3,7 @@
 //! pipes. Receipts and delivery cursors commit in the same SQLite transaction.
 use crate::{
     engine::Engine,
-    journal::{Journal, Request},
+    journal::{Journal, Request, TERMINAL},
     util::*,
 };
 use anyhow::{Context, Result, ensure};
@@ -332,7 +332,11 @@ pub fn run(
             [&sid],
             |r| r.get(0),
         )?;
-        if !captured
+        // EOF and shell exit do not cover descendants that redirected their
+        // output. An explicit deadline keeps their process group supervised.
+        let group_survives =
+            (timeout_ms.is_some() || interrupted.is_some()) && !kill_sent && child.group_exists();
+        if (!captured || group_survives)
             && interrupted.is_none()
             && (cancel || timeout_ms.is_some_and(|ms| job.duration_ms >= ms))
         {
@@ -348,7 +352,6 @@ pub fn run(
         }
         // A shell can exit and close both pipes while a redirected descendant
         // still ignores TERM/INT. Keep supervising that group through KILL.
-        let group_survives = interrupted.is_some() && !kill_sent && child.group_exists();
         if group_survives
             && interrupted.is_some_and(|at| at.elapsed() >= Duration::from_millis(250))
         {
@@ -458,8 +461,17 @@ fn deliver(
 ) -> Result<()> {
     let mut job = get(j, sid)?;
     let origin = &job.started_request_id;
+    // A lost worker may have saved capture progress without its first receipt.
+    // Reconcile that request, but keep its terminal outcome and delivery cursors
+    // intact. A live supervisor must retain priority for the initial delivery.
+    let origin_ready = if origin == id {
+        true
+    } else {
+        let origin = j.reconcile(j.get(origin)?)?;
+        origin.status == "done" || (TERMINAL.contains(&origin.status.as_str()) && !alive(&job))
+    };
     ensure!(
-        origin == id || j.get(origin)?.status == "done",
+        origin_ready,
         "Initial command response is not saved yet; call get_result with its request_id before polling this session"
     );
     let chars = args["chars"].as_str().unwrap_or("");
@@ -648,6 +660,78 @@ mod tests {
         assert_eq!(body["timed_out"], true);
         assert_eq!(body["signal"], libc::SIGKILL);
         assert_eq!(body["exit_code"], Value::Null);
+    }
+
+    #[test]
+    fn timeout_supervises_redirected_background_children_after_capture_finishes() {
+        for (ignore_term, yield_ms) in [(false, 10000), (true, 10000), (true, 10)] {
+            let dir = fixture();
+            let cmd = if ignore_term {
+                "bash -c 'trap \"\" TERM; echo $$ > child.pid; while :; do sleep 1; done' >/dev/null 2>&1 & while [ ! -s child.pid ]; do sleep .01; done"
+            } else {
+                "sleep 60 >/dev/null 2>&1 & echo $! > child.pid"
+            };
+            let before = Instant::now();
+            let (first, j) = execute(
+                dir.path(),
+                json!({"cmd":cmd,"timeout_ms":150,"yield_time_ms":yield_ms}),
+            );
+            let pid: u32 = fs::read_to_string(dir.path().join("child.pid"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            // Only this test's child is eligible for cleanup on assertion failure.
+            struct Cleanup(u32);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    unsafe {
+                        libc::kill(self.0 as i32, libc::SIGKILL);
+                    }
+                }
+            }
+            let _cleanup = Cleanup(pid);
+            let job = jobs(&j).unwrap().remove(0);
+            let body = snapshot(dir.path(), &job, [0, 0], 100).unwrap();
+            if yield_ms == 10 {
+                assert_eq!(first["finished"], false);
+                assert_eq!(first["timed_out"], false);
+                assert_eq!(first["session_id"], job.session_id);
+            }
+            assert!(before.elapsed() < Duration::from_secs(5));
+            assert_eq!(body["timed_out"], true);
+            assert_eq!(body["cancelled"], false);
+            assert_eq!(body["finished"], true);
+            // The shell exited successfully before its child's deadline.
+            assert_eq!(body["exit_code"], 0);
+            assert_eq!(body["signal"], Value::Null);
+            assert!(body["duration_ms"].as_u64().unwrap() >= 150);
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while fingerprint(pid).is_some() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                fingerprint(pid).is_none(),
+                "redirected child survived deadline"
+            );
+            assert!(job.finished);
+        }
+    }
+
+    #[test]
+    fn deadline_does_not_delay_a_command_whose_process_group_has_exited() {
+        for cmd in ["printf done", "sleep .05 >/dev/null 2>&1 & printf done"] {
+            let dir = fixture();
+            let before = Instant::now();
+            let (body, _) = execute(
+                dir.path(),
+                json!({"cmd":cmd, "timeout_ms":1000,"yield_time_ms":10000}),
+            );
+            assert!(before.elapsed() < Duration::from_secs(2));
+            assert_eq!(body["finished"], true);
+            assert_eq!(body["timed_out"], false);
+            assert_eq!(body["stdout"], "done");
+        }
     }
 
     #[test]
@@ -850,5 +934,122 @@ mod tests {
         let flat =
             crate::mcp::flatten(json!({"status":"done","result":{"structuredContent":body}}));
         assert_eq!(flat["status"], "unknown");
+    }
+
+    #[test]
+    fn poll_recovers_output_when_supervisor_disappears_before_initial_receipt() {
+        for collect_first in [false, true] {
+            let dir = fixture();
+            let command = json!({"cmd":"printf partial; printf error >&2", "yield_time_ms":10000});
+            let (_, j) = execute(dir.path(), command.clone());
+            let mut job = jobs(&j).unwrap().remove(0);
+            job.worker_fingerprint = "disappeared-supervisor".into();
+            job.finished = false;
+            job.exit_code = None;
+            save(&j, &job).unwrap();
+            j.db.execute(
+                "UPDATE requests SET status='running',result=NULL,worker_fingerprint=? WHERE id='test'",
+                [&job.worker_fingerprint],
+            ).unwrap();
+            j.db.execute(
+                "UPDATE pipe_sessions SET stdout_offset=0,stderr_offset=0",
+                [],
+            )
+            .unwrap();
+            assert_eq!(sessions(&j).unwrap()[0]["status"], "unknown");
+            if collect_first {
+                assert_eq!(
+                    crate::runtime::collect(dir.path(), "test", 0).unwrap()["status"],
+                    "unknown"
+                );
+            }
+            let args = json!({"session_id":job.session_id,"max_output_tokens":1});
+            let row = j.prepare("recover", "write_stdin", &args).unwrap();
+            run(dir.path(), &j, &row, &args, &mut false).unwrap();
+            let receipt = j.get("recover").unwrap().receipt().unwrap();
+            let flat = crate::mcp::flatten(receipt.clone());
+            assert_eq!(flat["status"], "unknown");
+            assert_eq!(flat["capture_status"], "supervisor_lost");
+            assert_eq!(flat["finished"], false);
+            assert_eq!(flat["exit_code"], Value::Null);
+            assert_eq!(flat["stdout"], "pa");
+            assert_eq!(flat["stderr"], "er");
+            for (name, expected) in [
+                ("stdout", b"partial".as_slice()),
+                ("stderr", b"error".as_slice()),
+            ] {
+                let reference = &flat[format!("{name}_ref")];
+                assert_eq!(reference["available"], true);
+                assert_eq!(reference["offset"], 2);
+                assert_eq!(reference["end_offset"], expected.len());
+                assert_eq!(
+                    fs::read(reference["path"].as_str().unwrap()).unwrap(),
+                    expected
+                );
+            }
+            let origin = crate::runtime::collect(dir.path(), "test", 0).unwrap();
+            assert_eq!(origin["status"], "unknown");
+            assert_eq!(
+                j.prepare("test", "exec_command", &command)
+                    .unwrap()
+                    .receipt()
+                    .unwrap(),
+                origin
+            );
+            // Replays preserve the recovery receipt; subsequent polls consume no bytes twice.
+            assert_eq!(
+                j.prepare("recover", "write_stdin", &args)
+                    .unwrap()
+                    .receipt()
+                    .unwrap(),
+                receipt
+            );
+            let row = j.prepare("again", "write_stdin", &args).unwrap();
+            run(dir.path(), &j, &row, &args, &mut false).unwrap();
+            let again = j.get("again").unwrap().receipt().unwrap();
+            assert_eq!(again["result"]["structuredContent"]["stdout"], "");
+            assert_eq!(again["result"]["structuredContent"]["stderr"], "");
+            assert_eq!(j.get("test").unwrap().receipt().unwrap(), origin);
+        }
+    }
+
+    #[test]
+    fn polling_requires_initial_receipt_or_terminal_origin_and_dead_supervisor() {
+        for live in [false, true] {
+            for status in ["queued", "running", "done", "error", "unknown"] {
+                let dir = fixture();
+                let (_, j) = execute(dir.path(), json!({"cmd":"printf retained"}));
+                let mut job = jobs(&j).unwrap().remove(0);
+                if !live {
+                    job.worker_fingerprint = "disappeared-supervisor".into();
+                }
+                job.finished = false;
+                save(&j, &job).unwrap();
+                j.db.execute("UPDATE requests SET status=? WHERE id='test'", [status])
+                    .unwrap();
+                j.db.execute(
+                    "UPDATE pipe_sessions SET stdout_offset=0,stderr_offset=0",
+                    [],
+                )
+                .unwrap();
+                let args = json!({"session_id":job.session_id});
+                j.prepare("poll", "write_stdin", &args).unwrap();
+                let result = deliver(dir.path(), &j, "poll", &job.session_id, &args, &mut false);
+                let allowed = status == "done" || (!live && matches!(status, "error" | "unknown"));
+                assert_eq!(
+                    result.is_ok(),
+                    allowed,
+                    "live={live}, status={status}: {result:?}"
+                );
+                let offsets: [u64; 2] =
+                    j.db.query_row(
+                        "SELECT stdout_offset,stderr_offset FROM pipe_sessions",
+                        [],
+                        |r| Ok([r.get(0)?, r.get(1)?]),
+                    )
+                    .unwrap();
+                assert_eq!(offsets, if allowed { job.stored } else { [0, 0] });
+            }
+        }
     }
 }
