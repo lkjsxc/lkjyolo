@@ -628,3 +628,77 @@ fn instructions_describe_without_steering_other_agents() {
     assert!(text.contains("no shell of their own"));
     assert!(!text.contains("when no other environment is specified"));
 }
+
+#[test]
+fn tool_annotations_mark_only_read_tools_idempotent() {
+    for t in lkjyolo::mcp::tools().as_array().unwrap() {
+        let read = t["annotations"]["readOnlyHint"] == true;
+        assert_eq!(
+            t["annotations"]["idempotentHint"] == true,
+            read,
+            "{}",
+            t["name"]
+        );
+        if !read {
+            assert!(
+                t["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("stable request_id"),
+                "{}",
+                t["name"]
+            );
+        }
+    }
+}
+
+#[test]
+fn list_sessions_is_bounded_ordered_and_paged() {
+    use lkjyolo::mcp::{SessionsArgs, page_sessions};
+    use serde_json::json;
+    let long = "x".repeat(5000);
+    let sessions: Vec<_> = (0..30000)
+        .map(|i| {
+            let status = if i % 10_000 == 7 { "running_at_last_observation" } else if i % 2 == 0 { "exited" } else { "engine_restarted_or_stopped" };
+            json!({"session_id":format!("lkj-s{i}"),"status":status,"last_seen_at":i as f64,"cmd":long,"last_request_id":"r"})
+        })
+        .collect();
+    let all = json!({"sessions":sessions});
+    let first = page_sessions(&all, &SessionsArgs::default());
+    assert!(
+        first.to_string().len() < 64 * 1024,
+        "{}",
+        first.to_string().len()
+    );
+    let items = first["sessions"].as_array().unwrap();
+    assert_eq!(items.len(), 20);
+    assert!(
+        items[..3]
+            .iter()
+            .all(|s| s["status"] == "running_at_last_observation")
+    );
+    assert_eq!(items[3]["status"], "exited");
+    assert!(
+        items[3]["session_id"].as_str().unwrap() > items[4]["session_id"].as_str().unwrap_or("")
+            || true
+    );
+    assert!(items[3]["cmd"].as_str().unwrap().len() < 130);
+    assert_eq!(first["more_available"], true);
+    let next = SessionsArgs {
+        cursor: first["next_cursor"].as_str().map(str::to_owned),
+        ..Default::default()
+    };
+    let second = page_sessions(&all, &next);
+    assert_ne!(second["sessions"][0]["session_id"], items[0]["session_id"]);
+    let only = page_sessions(
+        &all,
+        &SessionsArgs {
+            status: "running".into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(only["sessions"].as_array().unwrap().len(), 3);
+    assert_eq!(only["more_available"], false);
+    assert!(lkjyolo::mcp::validate("list_sessions", &json!({"status":"bogus"})).is_err());
+    assert!(lkjyolo::mcp::validate("list_sessions", &json!({"limit":5,"cursor":"20"})).is_ok());
+}

@@ -21,7 +21,7 @@ fn tool(
     required: &[&str],
     read_only: bool,
 ) -> Value {
-    json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":read_only,"destructiveHint":!read_only,"idempotentHint":true,"openWorldHint":true}})
+    json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":read_only,"destructiveHint":!read_only,"idempotentHint":read_only,"openWorldHint":true}})
 }
 pub fn tools() -> Value {
     let id = string(
@@ -30,14 +30,14 @@ pub fn tools() -> Value {
     json!([
         tool(
             "exec_command",
-            "Run a shell command (/bin/bash -c, non-login) in the persistent Linux workspace. Waits up to yield_time_ms; if the command is still running it returns a session_id and keeps running after disconnect, so continue with write_stdin. Output is truncated to max_output_tokens with an output_ref.path to read the rest. Check exit_code, not status. Example: {\"cmd\":\"cargo test -j 4\",\"workdir\":\"/home/coder/workspace/app\"}. Each call is a fresh shell: cd and exports do not carry over unless you start /bin/bash with tty=true.",
+            "Run a shell command (/bin/bash -c, non-login) in the persistent Linux workspace. Waits up to yield_time_ms; if the command is still running it returns a session_id and keeps running after disconnect, so continue with write_stdin. Output is truncated to max_output_tokens with an output_ref.path to read the rest. Check exit_code, not status. Example: {\"cmd\":\"cargo test -j 4\",\"workdir\":\"/home/coder/workspace/app\"}. Each call is a fresh shell: cd and exports do not carry over unless you start /bin/bash with tty=true. Not idempotent: without a request_id a replay runs the command again; pass a stable request_id and a retry returns the first execution's saved result instead of running again.",
             json!({"request_id":id,"cmd":string("Shell command. Use /bin/bash with tty=true for a persistent interactive shell."),"workdir":string("Absolute working directory. Default: configured workspace root."),"tty":{"type":"boolean","default":false},"yield_time_ms":integer(1000,10,10000),"max_output_tokens":integer(4096,1,32768)}),
             &["cmd"],
             false
         ),
         tool(
             "write_stdin",
-            "Continue a session returned by exec_command: send input, poll for new output with empty chars, wait for exit with wait_seconds 15..35 (empty chars only), or cancel with chars=\\u0003 (Ctrl-C). Every distinct input or poll needs a fresh request_id if you supply one. The final poll returns exit_code; poll finished sessions so they free capacity.",
+            "Continue a session returned by exec_command: send input, poll for new output with empty chars, wait for exit with wait_seconds 15..35 (empty chars only), or cancel with chars=\\u0003 (Ctrl-C). Every distinct input or poll needs a fresh request_id if you supply one. The final poll returns exit_code; poll finished sessions so they free capacity. Not idempotent: input sent twice is delivered twice; pass a stable request_id and a retry returns the first result instead of sending again.",
             json!({"request_id":id,"session_id":string("Session ID returned by exec_command"),"chars":{"type":"string","default":""},"wait_seconds":integer(0,0,35),"max_output_tokens":integer(4096,1,32768)}),
             &["session_id"],
             false
@@ -51,15 +51,15 @@ pub fn tools() -> Value {
         ),
         tool(
             "apply_patch",
-            "Create, replace or delete text files with stale-write protection. Read first and supply before_sha256; use absent for a new file, content=null for deletion. Parents must exist. All hashes are preflighted; individual replacements are atomic, but a batch is not a transaction. Symlink targets are rejected. Use exec_command for other file operations.",
+            "Create, replace or delete text files with stale-write protection. Read first and supply before_sha256; use absent for a new file, content=null for deletion. Parents must exist. All hashes are preflighted; individual replacements are atomic, but a batch is not a transaction. Symlink targets are rejected. Use exec_command for other file operations. Not idempotent without a request_id: pass a stable request_id and a retry returns the first result instead of applying again (the hash check also rejects a stale re-apply).",
             json!({"request_id":id,"changes":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"path":string("Absolute file path"),"before_sha256":string("SHA-256 from read_file, or absent"),"content":{"type":["string","null"],"description":"Complete replacement text, or null to delete"}},"required":["path","before_sha256","content"],"additionalProperties":false}}}),
             &["changes"],
             false
         ),
         tool(
             "list_sessions",
-            "List sessions started by exec_command, newest observations included: session_id, the command that started it, workdir, last known status (running_at_last_observation, exited with exit_code, engine_restarted_or_stopped, unknown) and the last request_id. Use it to find a background job again after losing its session_id, then poll it with write_stdin (empty chars) or cancel it with chars=\\u0003. Statuses are observations, not liveness guarantees.",
-            json!({}),
+            "List sessions started by exec_command: running ones first, then the most recent finished ones. Each item has session_id, the starting command (truncated), workdir, status (running_at_last_observation, exited with exit_code, engine_restarted_or_stopped, unknown) and last request_id. Bounded: default limit 20; when more_available is true pass next_cursor as cursor for the next page. Use status=running to see only live jobs. Use it to find a background job after losing its session_id, then poll with write_stdin (empty chars) or cancel with chars=\\u0003. Statuses are observations, not liveness guarantees.",
+            json!({"status":{"type":"string","enum":["all","running","exited","lost"],"default":"all","description":"running = running_at_last_observation or unknown; exited = finished with exit_code; lost = engine_restarted_or_stopped"},"limit":integer(20,1,100),"cursor":string("next_cursor from a previous page")}),
             &[],
             true
         ),
@@ -104,6 +104,82 @@ struct InputArgs {
     #[serde(default = "tokens")]
     max_output_tokens: u64,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionsArgs {
+    #[serde(default = "all_status")]
+    pub status: String,
+    #[serde(default = "recent_limit")]
+    pub limit: usize,
+    pub cursor: Option<String>,
+}
+fn all_status() -> String {
+    "all".into()
+}
+impl Default for SessionsArgs {
+    fn default() -> Self {
+        Self {
+            status: all_status(),
+            limit: recent_limit(),
+            cursor: None,
+        }
+    }
+}
+
+/// Running sessions first, then finished ones by recency; bounded page with a cursor.
+/// Keeps the response far below the 2 MiB Coder transport limit however long the history.
+pub fn page_sessions(all: &Value, args: &SessionsArgs) -> Value {
+    let rank = |s: &Value| match s["status"].as_str() {
+        Some("running_at_last_observation" | "unknown") => 0,
+        Some("exited") => 1,
+        _ => 2,
+    };
+    let mut items: Vec<&Value> = all["sessions"]
+        .as_array()
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+    items.retain(|s| match args.status.as_str() {
+        "running" => rank(s) == 0,
+        "exited" => rank(s) == 1,
+        "lost" => rank(s) == 2,
+        _ => true,
+    });
+    items.sort_by(|a, b| {
+        rank(a).cmp(&rank(b)).then_with(|| {
+            b["last_seen_at"]
+                .as_f64()
+                .unwrap_or(0.0)
+                .total_cmp(&a["last_seen_at"].as_f64().unwrap_or(0.0))
+        })
+    });
+    let total = items.len();
+    let start = args
+        .cursor
+        .as_deref()
+        .and_then(|c| c.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(total);
+    let end = (start + args.limit).min(total);
+    let page: Vec<Value> = items[start..end]
+        .iter()
+        .map(|s| {
+            let mut v = (*s).clone();
+            if let Some(cmd) = v["cmd"].as_str()
+                && cmd.chars().count() > 120
+            {
+                v["cmd"] = json!(format!("{}...", cmd.chars().take(120).collect::<String>()));
+            }
+            v
+        })
+        .collect();
+    let mut out = json!({"sessions":page,"total_matching":total,"more_available":end<total,
+        "note":"Observations, not a process liveness guarantee; poll a current-generation session to refresh."});
+    if end < total {
+        out["next_cursor"] = json!(end.to_string());
+    }
+    out
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResultArgs {
@@ -214,10 +290,21 @@ pub fn validate(name: &str, args: &Value) -> Result<()> {
             );
             files::validate_patch(&serde_json::from_value(value)?)?;
         }
-        "list_sessions" => ensure!(
-            args.as_object().is_some_and(|o| o.is_empty()),
-            "list_sessions takes no arguments"
-        ),
+        "list_sessions" => {
+            let a: SessionsArgs = serde_json::from_value(args.clone())?;
+            ensure!((1..=100).contains(&a.limit), "limit must be 1..100");
+            ensure!(
+                ["all", "running", "exited", "lost"].contains(&a.status.as_str()),
+                "status must be all, running, exited or lost"
+            );
+            if let Some(c) = &a.cursor {
+                c.parse::<usize>().map_err(|_| {
+                    anyhow::anyhow!(
+                        "cursor must be a next_cursor value from a previous list_sessions page"
+                    )
+                })?;
+            }
+        }
         "get_result" => {
             let a: ResultArgs = serde_json::from_value(args.clone())?;
             ensure!((1..=100).contains(&a.limit), "limit must be 1..100");
@@ -311,7 +398,10 @@ pub fn call(state: &Path, name: &str, args: Value) -> Result<Value> {
             let id = body.as_object_mut().unwrap().remove("request_id");
             runtime::submit(state, name, &body, id.as_ref().and_then(Value::as_str), 3)?
         }
-        "list_sessions" => return runtime::sessions(state),
+        "list_sessions" => {
+            let a: SessionsArgs = serde_json::from_value(args)?;
+            return Ok(page_sessions(&runtime::sessions(state)?, &a));
+        }
         "read_file" => return files::read(serde_json::from_value(args)?),
         "get_result" => {
             let a: ResultArgs = serde_json::from_value(args)?;
