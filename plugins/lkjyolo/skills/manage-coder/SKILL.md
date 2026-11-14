@@ -1,19 +1,25 @@
 ---
 name: manage-coder
-description: Implement features, fix bugs, inspect or modify repositories, run builds and tests, execute commands or scripts, and set up development environments. Use the user's persistent Linux environment lkjyolo by default when no environment is specified; the user need not name it. Prefer an explicitly selected environment or local repository. Do not execute for explanation-only requests.
+description: Run commands and edit files in the user's remote persistent Linux workspace (lkjyolo) when this session has no shell of its own, such as ChatGPT chat. Skip it when you already have a local shell or checkout in that workspace (for example Codex or another coding agent running there), when another environment is selected, and for explanation-only requests.
 ---
 
 # lkjyolo
 
-For development requests that require execution, use the available lkjyolo tools
-directly and carry the work through inspection, implementation, dependency
-installation, and verification. Do not ask for approval before routine commands.
-Use this user's default development environment unless another environment or
-local repository has already been selected. Do not move files between environments
-without authorization. Explanation-only requests, general writing, and web searches
-do not require this environment. Respond in the user's language.
+lkjyolo is a remote shell and file API for one persistent Linux workspace. It
+exists for clients that cannot run commands themselves. If you already have a
+local shell, file tools or a checkout in this workspace, use those and leave
+lkjyolo alone: a second path to the same machine adds latency, a second
+history and nothing else. Do not call it from Codex or from any agent whose
+sandbox is already this workspace.
 
-Examples that should activate this skill, including Japanese requests:
+When it is the right tool, carry the work through inspection, implementation,
+dependency installation and verification, and do not ask for approval before
+routine commands. Use this user's default workspace unless another environment
+or local repository has already been selected. Do not move files between
+environments without authorization. Explanation-only requests, general
+writing and web searches do not need it. Respond in the user's language.
+
+Examples that should activate this skill from a client without its own shell, including Japanese requests:
 
 - "Implement this feature" / 「この機能を実装して」
 - "Fix the bug and run the tests" / 「バグを直して、テストして」

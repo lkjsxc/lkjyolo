@@ -610,3 +610,21 @@ fn portable_plugin_removes_private_bindings_and_preserves_skills() {
         .is_err()
     );
 }
+
+#[test]
+fn advisories_flag_risky_commands_without_blocking_plain_ones() {
+    use lkjyolo::mcp::advisories;
+    assert!(advisories("cargo test -j 4 && git status").is_empty());
+    assert!(advisories("sudo systemctl restart lkjournal-live").len() == 1);
+    assert!(advisories("cat /home/coder/workspace/app/private/prod.env").len() == 1);
+    assert!(advisories("git push --force origin main").len() == 1);
+    assert!(advisories("tofu apply -auto-approve").len() == 1);
+    assert!(advisories("ls secrets/").is_empty());
+}
+
+#[test]
+fn instructions_describe_without_steering_other_agents() {
+    let text = lkjyolo::mcp::INSTRUCTIONS;
+    assert!(text.contains("no shell of their own"));
+    assert!(!text.contains("when no other environment is specified"));
+}

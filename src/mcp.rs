@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 pub const VERSIONS: &[&str] = &["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
-pub const INSTRUCTIONS: &str = "Use lkjyolo for coding, debugging, tests, builds, installations and Linux work when no other environment is specified. The default workspace is already selected. Execute and verify requested work autonomously using the workspace's OS permissions, sudo, Docker, network and existing GitHub authentication. No command approval prompts or allowlists are added by this server. Use a unique request_id for every exec, input and patch. After disconnect, call get_result with that same ID; never repeat an unknown mutation with a new ID. queued/running means retrieve the receipt; a session_id means use write_stdin. done means a saved response, not command success: inspect exit_code. Read output_ref.path using read_file for truncated logs. Processes survive disconnects but not workspace/engine restarts. Respect the user's chosen environment and scope; do not reveal credentials. Explanation-only requests need no execution.";
+pub const INSTRUCTIONS: &str = "lkjyolo is a remote shell and file API for one persistent Linux workspace, meant for clients that have no shell of their own. An agent that already runs inside this workspace (for example Codex) has no need for it. Commands run as the workspace user with its OS permissions, sudo, Docker, network and existing GitHub login; the server adds no allowlist or approval prompt. Before editing a repository, check its git status and AGENTS.md. Do not restart or reconfigure running services, and do not print or copy credential files, unless the user asked for that. request_id is optional and server-assigned when omitted; it is returned in every result. After a disconnect call get_result with the ID (or resend the same ID and arguments); never repeat an unknown mutation under a new ID. Result fields: status=done means a response was saved, so check exit_code for success; a session_id means the process is still running (continue with write_stdin); queued/running means poll get_result; output_ref.path is a saved log to read with read_file ranges. Processes survive disconnects but not workspace or engine restarts. Explanation-only requests need no execution.";
 
 fn string(description: &str) -> Value {
     json!({"type":"string","description":description})
@@ -25,21 +25,21 @@ fn tool(
 }
 pub fn tools() -> Value {
     let id = string(
-        "Unique operation ID, e.g. project-build-<random suffix>. Reuse this exact ID and arguments after a transport failure; do not invent another ID to retry uncertain work.",
+        "Optional operation ID (letters, digits, . _ -; up to 120). Omit it and the server assigns one and returns it. Set your own only when you may need to recover this call: after a transport failure resend the same ID and arguments, or call get_result with it. Never retry uncertain work under a different ID.",
     );
     json!([
         tool(
             "exec_command",
-            "Run any shell command in your persistent Linux development workspace. Use for coding, tests, builds, dependency installation, Git, sudo and Docker. Long-running processes return a session_id and keep running after disconnect. No command allowlist or approval prompt.",
+            "Run a shell command (/bin/bash -c, non-login) in the persistent Linux workspace. Waits up to yield_time_ms; if the command is still running it returns a session_id and keeps running after disconnect, so continue with write_stdin. Output is truncated to max_output_tokens with an output_ref.path to read the rest. Check exit_code, not status. Example: {\"cmd\":\"cargo test -j 4\",\"workdir\":\"/home/coder/workspace/app\"}. Each call is a fresh shell: cd and exports do not carry over unless you start /bin/bash with tty=true.",
             json!({"request_id":id,"cmd":string("Shell command. Use /bin/bash with tty=true for a persistent interactive shell."),"workdir":string("Absolute working directory. Default: configured workspace root."),"tty":{"type":"boolean","default":false},"yield_time_ms":integer(1000,10,10000),"max_output_tokens":integer(4096,1,32768)}),
-            &["request_id", "cmd"],
+            &["cmd"],
             false
         ),
         tool(
             "write_stdin",
-            "Continue a running session: send input, read new output, wait for completion, or send Ctrl-C (chars=\\u0003). Use a fresh request_id for each distinct input or poll. Set wait_seconds to 15..35 with empty chars for a longer wait.",
+            "Continue a session returned by exec_command: send input, poll for new output with empty chars, wait for exit with wait_seconds 15..35 (empty chars only), or cancel with chars=\\u0003 (Ctrl-C). Every distinct input or poll needs a fresh request_id if you supply one. The final poll returns exit_code; poll finished sessions so they free capacity.",
             json!({"request_id":id,"session_id":string("Session ID returned by exec_command"),"chars":{"type":"string","default":""},"wait_seconds":integer(0,0,35),"max_output_tokens":integer(4096,1,32768)}),
-            &["request_id", "session_id"],
+            &["session_id"],
             false
         ),
         tool(
@@ -53,7 +53,7 @@ pub fn tools() -> Value {
             "apply_patch",
             "Create, replace or delete text files with stale-write protection. Read first and supply before_sha256; use absent for a new file, content=null for deletion. Parents must exist. All hashes are preflighted; individual replacements are atomic, but a batch is not a transaction. Symlink targets are rejected. Use exec_command for other file operations.",
             json!({"request_id":id,"changes":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"path":string("Absolute file path"),"before_sha256":string("SHA-256 from read_file, or absent"),"content":{"type":["string","null"],"description":"Complete replacement text, or null to delete"}},"required":["path","before_sha256","content"],"additionalProperties":false}}}),
-            &["request_id", "changes"],
+            &["changes"],
             false
         ),
         tool(
@@ -69,7 +69,7 @@ pub fn tools() -> Value {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecArgs {
-    request_id: String,
+    request_id: Option<String>,
     cmd: String,
     workdir: Option<String>,
     #[serde(default)]
@@ -88,7 +88,7 @@ fn tokens() -> u64 {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InputArgs {
-    request_id: String,
+    request_id: Option<String>,
     session_id: String,
     #[serde(default)]
     chars: String,
@@ -139,7 +139,9 @@ pub fn validate(name: &str, args: &Value) -> Result<()> {
     match name {
         "exec_command" => {
             let a: ExecArgs = serde_json::from_value(args.clone())?;
-            crate::journal::validate_id(&a.request_id)?;
+            if let Some(id) = &a.request_id {
+                crate::journal::validate_id(id)?;
+            }
             ensure!(
                 !a.cmd.trim().is_empty() && a.cmd.len() <= 512 * 1024,
                 "cmd must be nonempty and at most 512 KiB"
@@ -153,19 +155,24 @@ pub fn validate(name: &str, args: &Value) -> Result<()> {
                 "max_output_tokens must be 1..32768"
             );
             if let Some(path) = a.workdir {
-                ensure!(Path::new(&path).is_absolute(), "workdir must be absolute");
+                ensure!(
+                    Path::new(&path).is_absolute(),
+                    "workdir must be an absolute path such as /home/coder/workspace; relative paths are not resolved"
+                );
             }
         }
         "write_stdin" => {
             let a: InputArgs = serde_json::from_value(args.clone())?;
-            crate::journal::validate_id(&a.request_id)?;
+            if let Some(id) = &a.request_id {
+                crate::journal::validate_id(id)?;
+            }
             ensure!(
                 a.session_id.len() <= 120
                     && a.session_id.split('-').count() == 2
                     && a.session_id
                         .split('-')
                         .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_lowercase())),
-                "Invalid session_id"
+                "Invalid session_id: pass the session_id exactly as exec_command returned it (two lowercase words joined by a hyphen). If the process already finished, call get_result with the original exec_command request_id"
             );
             ensure!(a.chars.len() <= 512 * 1024, "Input exceeds 512 KiB");
             ensure!(
@@ -183,17 +190,14 @@ pub fn validate(name: &str, args: &Value) -> Result<()> {
                 a.path.is_absolute()
                     && a.offset <= i64::MAX as u64
                     && (1..=262144).contains(&a.limit),
-                "Invalid path, offset or limit"
+                "read_file needs an absolute path, offset >= 0 and limit 1..262144 bytes (or entries for a directory)"
             );
         }
         "apply_patch" => {
             let mut value = args.clone();
-            let id = value
-                .as_object_mut()
-                .unwrap()
-                .remove("request_id")
-                .context("request_id required")?;
-            crate::journal::validate_id(id.as_str().context("request_id must be a string")?)?;
+            if let Some(id) = value.as_object_mut().unwrap().remove("request_id") {
+                crate::journal::validate_id(id.as_str().context("request_id must be a string")?)?;
+            }
             // Option<String> otherwise treats an omitted field as a deletion.
             ensure!(
                 value["changes"]
@@ -210,9 +214,50 @@ pub fn validate(name: &str, args: &Value) -> Result<()> {
                 crate::journal::validate_id(&id)?;
             }
         }
-        _ => bail!("Unknown tool: {name}"),
+        _ => bail!(
+            "Unknown tool: {name}. Available tools: exec_command, write_stdin, read_file, apply_patch, get_result"
+        ),
     }
     Ok(())
+}
+
+/// Advisory notes for risky command shapes. They never block: the server keeps
+/// its no-allowlist contract, but the model gets a reminder with the result.
+pub fn advisories(cmd: &str) -> Vec<&'static str> {
+    let c = cmd.to_ascii_lowercase();
+    let has = |needle: &str| c.contains(needle);
+    let mut out = Vec::new();
+    if (has("systemctl") || has("service "))
+        && ["restart", "stop", "disable", "mask", "kill"]
+            .iter()
+            .any(|v| has(v))
+    {
+        out.push("Service control: running services may serve real users. Do this only if the user asked for it.");
+    }
+    if has("tofu apply") || has("terraform apply") || has("setup-live") {
+        out.push("Deployment-style command: confirm the user asked for a live change; tests should use fresh ports and stores.");
+    }
+    if has("push --force") || has("push -f") || has("reset --hard") || has("clean -fd") {
+        out.push(
+            "Destructive git operation: confirm the target and that no unmerged work is lost.",
+        );
+    }
+    let secret = [
+        ".env",
+        "secrets",
+        "tunnel.token",
+        "bootstrap.secret",
+        "id_rsa",
+        "id_ed25519",
+        "auth.json",
+    ];
+    let reads = [
+        "cat ", "less ", "head ", "tail ", "cp ", "base64", "printenv", "env |", "grep ",
+    ];
+    if secret.iter().any(|n| has(n)) && reads.iter().any(|v| has(v)) {
+        out.push("Command touches a credential-like file. Do not print or copy secret values into output, chat or Git.");
+    }
+    out
 }
 
 pub fn call(state: &Path, name: &str, args: Value) -> Result<Value> {
@@ -224,7 +269,18 @@ pub fn call(state: &Path, name: &str, args: Value) -> Result<Value> {
             if let Some(wd) = a.workdir {
                 body["workdir"] = json!(wd);
             }
-            runtime::submit(state, name, &body, Some(&a.request_id), 3)?
+            let notes = advisories(&a.cmd);
+            let mut flat = flatten(runtime::submit(
+                state,
+                name,
+                &body,
+                a.request_id.as_deref(),
+                3,
+            )?);
+            if !notes.is_empty() {
+                flat["warnings"] = json!(notes);
+            }
+            return Ok(flat);
         }
         "write_stdin" => {
             let a: InputArgs = serde_json::from_value(args)?;
@@ -237,12 +293,12 @@ pub fn call(state: &Path, name: &str, args: Value) -> Result<Value> {
                 body["chars"] = json!(a.chars);
                 "write_stdin"
             };
-            runtime::submit(state, tool, &body, Some(&a.request_id), 3)?
+            runtime::submit(state, tool, &body, a.request_id.as_deref(), 3)?
         }
         "apply_patch" => {
             let mut body = args;
-            let id = body.as_object_mut().unwrap().remove("request_id").unwrap();
-            runtime::submit(state, name, &body, id.as_str(), 3)?
+            let id = body.as_object_mut().unwrap().remove("request_id");
+            runtime::submit(state, name, &body, id.as_ref().and_then(Value::as_str), 3)?
         }
         "read_file" => return files::read(serde_json::from_value(args)?),
         "get_result" => {

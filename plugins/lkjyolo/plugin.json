@@ -4,7 +4,7 @@
     "name": "lkjsxc",
     "email": "lkjsxc@gmail.com"
   },
-  "description": "Implement features, fix bugs, inspect repositories, build, and test in the user's persistent Linux development environment lkjyolo. Use for development work when no other execution environment is specified.",
+  "description": "Run commands and edit files in the user's remote persistent Linux workspace (lkjyolo) from a client that has no shell of its own. Not for agents already running inside that workspace, such as Codex.",
   "extensions": {
     "com.openai": {
       "apps": "./.app.json",
@@ -27,5 +27,5 @@
     }
   },
   "name": "lkjyolo",
-  "version": "0.6.0"
+  "version": "0.6.1"
 }

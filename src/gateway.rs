@@ -647,12 +647,24 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             let Some(name) = request["params"]["name"].as_str().map(str::to_owned) else {
                 return error(StatusCode::OK, id, -32602, "Tool name required");
             };
-            let args = request["params"]
+            let mut args = request["params"]
                 .get("arguments")
                 .cloned()
                 .unwrap_or(json!({}));
             if let Err(e) = mcp::validate(&name, &args) {
                 return error(StatusCode::OK, id, -32602, &e.to_string());
+            }
+            // Assign the ID here, before forwarding, so a transport failure
+            // can still name the ID the client must recover with.
+            let mut assigned = None;
+            if matches!(
+                name.as_str(),
+                "exec_command" | "write_stdin" | "apply_patch"
+            ) && args.get("request_id").is_none()
+            {
+                let fresh = uuid::Uuid::new_v4().simple().to_string();
+                args["request_id"] = json!(fresh);
+                assigned = Some(fresh);
             }
             let call_server = server.clone();
             // Move the permit into the blocking task: client disconnect cannot
@@ -665,7 +677,7 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             {
                 Ok(Ok(value)) => mcp::wrapped(value),
                 Ok(Err(e)) => mcp::wrapped(
-                    json!({"isError":true,"error":e.to_string(),"next":"Use get_result with the original request_id after a transport error. Do not repeat uncertain mutations with a new ID."}),
+                    json!({"isError":true,"request_id":assigned,"error":e.to_string(),"next":"Use get_result with the original request_id after a transport error. Do not repeat uncertain mutations with a new ID."}),
                 ),
                 Err(_) => mcp::wrapped(
                     json!({"isError":true,"error":"Worker unavailable; recover by original request_id"}),
